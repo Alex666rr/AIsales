@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import stat
 from pathlib import Path
 from uuid import UUID
 
@@ -40,11 +41,18 @@ def make_upload(tmp_path: Path, original_name: str) -> QuarantinedUpload:
     )
 
 
+class NeverConvertAdapter(ConvertingAdapter):
+    async def convert(self, material: SessionMaterial) -> bytes:
+        raise AssertionError("unsafe upload reached the adapter")
+
+
 def test_successful_conversion_removes_upload_and_logs_only_safe_metadata(tmp_path, caplog):
     """A successful conversion must leave neither the source file nor sensitive log content."""
     upload = make_upload(tmp_path, "customer-export.tdata")
     processor = SessionQuarantineProcessor(
-        ConvertingAdapter(), EncryptedSessionStore({1: b"s" * 32}, active_key_version=1)
+        ConvertingAdapter(),
+        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        quarantine_root=tmp_path,
     )
 
     with caplog.at_level(logging.INFO, logger="telegram_connector.quarantine"):
@@ -61,7 +69,9 @@ def test_failed_conversion_still_removes_upload_and_logs_only_safe_metadata(tmp_
     """A conversion failure must delete the source file in the finally path without leaking details."""
     upload = make_upload(tmp_path, "customer-export.tdata")
     processor = SessionQuarantineProcessor(
-        FailingAdapter(), EncryptedSessionStore({1: b"s" * 32}, active_key_version=1)
+        FailingAdapter(),
+        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        quarantine_root=tmp_path,
     )
 
     with caplog.at_level(logging.INFO, logger="telegram_connector.quarantine"):
@@ -74,3 +84,79 @@ def test_failed_conversion_still_removes_upload_and_logs_only_safe_metadata(tmp_
     ]
     assert "customer-export.tdata" not in caplog.text
     assert "highly sensitive uploaded session" not in caplog.text
+
+
+def test_outside_quarantine_root_is_refused_without_deleting_external_file(tmp_path, caplog):
+    """A caller-controlled path outside the configured root must never reach cleanup or conversion."""
+    quarantine_root = tmp_path / "quarantine"
+    quarantine_root.mkdir()
+    outside_upload = tmp_path / "external-session.tdata"
+    outside_upload.write_bytes(b"external sensitive upload")
+    upload = QuarantinedUpload(
+        upload_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        original_path=outside_upload,
+        material=SessionMaterial(adapter="tdata", payload=b"external sensitive upload", credentials={}),
+    )
+    processor = SessionQuarantineProcessor(
+        NeverConvertAdapter(),
+        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        quarantine_root=quarantine_root,
+    )
+
+    with caplog.at_level(logging.INFO, logger="telegram_connector.quarantine"):
+        with pytest.raises(ValueError, match="unsafe quarantined upload"):
+            asyncio.run(processor.convert_and_store(UUID(int=1), upload))
+
+    assert outside_upload.exists()
+    assert caplog.messages == ["session_upload upload_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa status=rejected"]
+    assert "external-session.tdata" not in caplog.text
+    assert "external sensitive upload" not in caplog.text
+
+
+def test_symlinked_quarantine_upload_is_refused_without_deleting_target(tmp_path, caplog):
+    """A symlink inside quarantine must not become a delete-capable alias for an external file."""
+    quarantine_root = tmp_path / "quarantine"
+    quarantine_root.mkdir()
+    external_target = tmp_path / "external-session.tdata"
+    external_target.write_bytes(b"external sensitive upload")
+    symlink_path = quarantine_root / "linked-session.tdata"
+    try:
+        symlink_path.symlink_to(external_target)
+    except OSError as error:
+        pytest.skip(f"symlink creation is unavailable on this platform: {error}")
+    upload = QuarantinedUpload(
+        upload_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+        original_path=symlink_path,
+        material=SessionMaterial(adapter="tdata", payload=b"external sensitive upload", credentials={}),
+    )
+    processor = SessionQuarantineProcessor(
+        NeverConvertAdapter(),
+        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        quarantine_root=quarantine_root,
+    )
+
+    with caplog.at_level(logging.INFO, logger="telegram_connector.quarantine"):
+        with pytest.raises(ValueError, match="unsafe quarantined upload"):
+            asyncio.run(processor.convert_and_store(UUID(int=1), upload))
+
+    assert external_target.exists()
+    assert symlink_path.exists()
+    assert caplog.messages == ["session_upload upload_id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa status=rejected"]
+    assert "linked-session.tdata" not in caplog.text
+    assert "external sensitive upload" not in caplog.text
+
+
+def test_regular_upload_is_accepted_when_reparse_attributes_are_unavailable(tmp_path, monkeypatch):
+    """Platforms without Windows reparse metadata must still accept regular quarantine files."""
+    monkeypatch.delattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", raising=False)
+    upload = make_upload(tmp_path, "customer-export.tdata")
+    processor = SessionQuarantineProcessor(
+        ConvertingAdapter(),
+        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        quarantine_root=tmp_path,
+    )
+
+    reference = asyncio.run(processor.convert_and_store(UUID(int=1), upload))
+
+    assert reference.key_version == 1
+    assert not upload.original_path.exists()

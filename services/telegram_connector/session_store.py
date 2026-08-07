@@ -10,6 +10,13 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pydantic import BaseModel, ConfigDict
 
 
+class SessionCiphertextAuthenticationError(ValueError):
+    """Safe domain error for malformed, unauthenticated, or unavailable ciphertext."""
+
+    def __init__(self) -> None:
+        super().__init__("session ciphertext authentication failed")
+
+
 class SessionRef(BaseModel):
     """Non-secret metadata identifying one encrypted session record."""
 
@@ -113,6 +120,8 @@ class EncryptedSessionStore:
 
     def decrypt(self, record: StoredSessionCiphertext) -> bytes:
         """Decrypt one record and reject any authentication failure."""
+        if len(record.ciphertext) < 28:
+            raise SessionCiphertextAuthenticationError()
         nonce, encrypted_payload = record.ciphertext[:12], record.ciphertext[12:]
         try:
             return AESGCM(self._keys[record.key_version]).decrypt(
@@ -120,8 +129,8 @@ class EncryptedSessionStore:
                 encrypted_payload,
                 self._associated_data(record.account_id, record.session_id, record.key_version),
             )
-        except (InvalidTag, KeyError) as error:
-            raise ValueError("session ciphertext authentication failed") from error
+        except (InvalidTag, KeyError, ValueError) as error:
+            raise SessionCiphertextAuthenticationError() from error
 
     def persisted_records(self) -> tuple[StoredSessionCiphertext, ...]:
         """Expose ciphertext-only records for persistence-boundary verification."""

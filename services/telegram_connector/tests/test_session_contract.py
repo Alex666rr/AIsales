@@ -5,13 +5,16 @@ from collections.abc import Mapping
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from telegram_connector import (
     EncryptedSessionStore,
+    QuarantinedUpload,
     SessionAdapter,
+    SessionCiphertextAuthenticationError,
     SessionMaterial,
     SessionProbeResult,
+    StoredSessionCiphertext,
 )
 
 
@@ -34,6 +37,12 @@ class ContractAdapter:
 
     async def convert(self, material: SessionMaterial) -> bytes:
         return material.payload
+
+
+class UploadEnvelope(BaseModel):
+    """A caller-owned wrapper used to prove sensitive fields remain excluded when nested."""
+
+    upload: QuarantinedUpload
 
 
 @pytest.fixture
@@ -85,6 +94,43 @@ def test_session_value_objects_are_immutable():
         result.state = "authorized"
 
 
+def test_sensitive_session_material_is_absent_from_public_serialization(tmp_path):
+    """A payload leak through repr or Pydantic dumps must fail at every public boundary."""
+    sentinel = b"RAW-SESSION-SENTINEL"
+    material = SessionMaterial(
+        adapter="tdata",
+        payload=sentinel,
+        credentials={"token": "RAW-CREDENTIAL-SENTINEL"},
+    )
+    upload = QuarantinedUpload(
+        original_path=tmp_path / "customer-session.tdata",
+        material=material,
+    )
+    envelope = UploadEnvelope(upload=upload)
+
+    public_representations = (
+        repr(material),
+        material.model_dump(),
+        material.model_dump_json(),
+        material.model_dump(include={"payload", "credentials"}),
+        material.model_dump_json(include={"payload", "credentials"}),
+        repr(upload),
+        upload.model_dump(),
+        upload.model_dump_json(),
+        repr(envelope),
+        envelope.model_dump(),
+        envelope.model_dump_json(),
+    )
+
+    for representation in public_representations:
+        assert "RAW-SESSION-SENTINEL" not in str(representation)
+        assert "RAW-CREDENTIAL-SENTINEL" not in str(representation)
+
+    assert material.model_dump() == {"adapter": "tdata"}
+    assert material.model_dump(include={"payload", "credentials"}) == {}
+    assert upload.model_dump() == {"upload_id": upload.upload_id}
+
+
 def test_store_persists_authenticated_ciphertext_with_key_version_only():
     """Replacing persisted ciphertext or retaining plaintext must break the storage contract."""
     account_id = UUID("12345678-1234-5678-1234-567812345678")
@@ -116,3 +162,35 @@ def test_store_returns_references_with_generated_ids():
 
     assert isinstance(reference.session_id, UUID)
     assert reference.key_version == 1
+
+
+@pytest.mark.parametrize("ciphertext", [b"", b"n" * 11, b"n" * 12, b"n" * 27])
+def test_store_rejects_malformed_ciphertext_with_a_safe_authentication_error(ciphertext):
+    """Malformed records must not expose nonce, tag, key, or payload details to callers."""
+    record = StoredSessionCiphertext(
+        account_id=UUID("12345678-1234-5678-1234-567812345678"),
+        session_id=UUID("87654321-4321-8765-4321-876543218765"),
+        key_version=1,
+        ciphertext=ciphertext,
+    )
+    store = EncryptedSessionStore({1: b"k" * 32}, active_key_version=1)
+
+    with pytest.raises(SessionCiphertextAuthenticationError) as failure:
+        store.decrypt(record)
+
+    assert "nonce" not in str(failure.value)
+    assert "tag" not in str(failure.value)
+    assert "key" not in str(failure.value)
+
+
+def test_store_normalizes_unknown_key_versions_to_the_safe_domain_error():
+    """Records referring to retired or unavailable key versions expose no key-management detail."""
+    store = EncryptedSessionStore({1: b"k" * 32}, active_key_version=1)
+    reference = store.put(UUID("12345678-1234-5678-1234-567812345678"), b"session bytes")
+    unknown_key_record = store.persisted_records()[0].model_copy(update={"key_version": 2})
+
+    with pytest.raises(SessionCiphertextAuthenticationError) as failure:
+        store.decrypt(unknown_key_record)
+
+    assert str(failure.value) == "session ciphertext authentication failed"
+    assert str(reference.key_version) not in str(failure.value)

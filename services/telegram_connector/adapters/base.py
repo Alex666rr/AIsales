@@ -12,8 +12,12 @@ class SessionMaterial(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     adapter: str
-    payload: bytes = Field(repr=False)
-    credentials: tuple[tuple[str, SecretStr], ...] = Field(default_factory=tuple, repr=False)
+    payload: bytes = Field(exclude=True, repr=False)
+    credentials: tuple[tuple[str, SecretStr], ...] = Field(
+        default_factory=tuple,
+        exclude=True,
+        repr=False,
+    )
 
     @model_validator(mode="before")
     @classmethod
