@@ -6,15 +6,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.db.session import create_session_factory
 from apps.api.app.main import create_app
-from services.telegram_connector.config import ConnectorSettings
-from services.telegram_connector.models import (
+from telegram_connector.config import ConnectorSettings
+from telegram_connector.models import (
     deserialize_utc_timestamp,
     serialize_utc_timestamp,
 )
 
 
+def set_required_connector_environment(monkeypatch) -> None:
+    """Provide non-secret test values for all mandatory connector settings."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_sales")
+    monkeypatch.setenv("SESSION_ENCRYPTION_KEY", "test-key")
+    monkeypatch.setenv("TELEGRAM_API_ID", "12345")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "test-hash")
+
+
 def test_settings_reject_missing_encryption_key(monkeypatch):
     """A missing key must prevent the connector from starting."""
+    set_required_connector_environment(monkeypatch)
     monkeypatch.delenv("SESSION_ENCRYPTION_KEY", raising=False)
 
     with pytest.raises(ValidationError):
@@ -23,10 +32,7 @@ def test_settings_reject_missing_encryption_key(monkeypatch):
 
 def test_settings_loads_required_test_environment(monkeypatch):
     """The connector reads all required prototype settings from the environment."""
-    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_sales")
-    monkeypatch.setenv("SESSION_ENCRYPTION_KEY", "test-key")
-    monkeypatch.setenv("TELEGRAM_API_ID", "12345")
-    monkeypatch.setenv("TELEGRAM_API_HASH", "test-hash")
+    set_required_connector_environment(monkeypatch)
 
     settings = ConnectorSettings()
 

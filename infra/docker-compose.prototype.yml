@@ -4,7 +4,7 @@ services:
       context: ..
       dockerfile: infra/Dockerfile
     environment:
-      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/ai_sales
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@db:5432/ai_sales
       SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?SESSION_ENCRYPTION_KEY is required}
       TELEGRAM_API_ID: ${TELEGRAM_API_ID:?TELEGRAM_API_ID is required}
       TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required}
@@ -19,7 +19,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: ai_sales
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_USER: postgres
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d ai_sales"]

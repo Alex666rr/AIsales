@@ -21,6 +21,8 @@ dependencies = [
 test = [
     "pytest>=8.3,<9",
     "PyYAML>=6.0,<7",
+    "setuptools>=75",
+    "wheel>=0.45,<1",
 ]
 
 [tool.pytest.ini_options]
