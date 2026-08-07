@@ -45,6 +45,13 @@ class UploadEnvelope(BaseModel):
     upload: QuarantinedUpload
 
 
+class CoercibleKey:
+    """A deliberately suspicious object whose __bytes__ must not authorize key input."""
+
+    def __bytes__(self) -> bytes:
+        return b"x" * 32
+
+
 @pytest.fixture
 def valid_material() -> Mapping[str, SessionMaterial]:
     return {
@@ -162,6 +169,39 @@ def test_store_returns_references_with_generated_ids():
 
     assert isinstance(reference.session_id, UUID)
     assert reference.key_version == 1
+
+
+@pytest.mark.parametrize(
+    "key_factory",
+    [
+        lambda: b"k" * 32,
+        lambda: bytearray(b"k" * 32),
+        lambda: memoryview(bytearray(b"k" * 32)),
+    ],
+)
+def test_store_accepts_only_explicit_bytes_like_key_material(key_factory):
+    """Bytes, bytearray, and memoryview inputs are normalized without retaining mutable key state."""
+    key = key_factory()
+    store = EncryptedSessionStore({1: key}, active_key_version=1)
+    if isinstance(key, bytearray):
+        key[:] = b"z" * 32
+    if isinstance(key, memoryview) and not key.readonly:
+        key[:] = b"z" * 32
+
+    reference = store.put(UUID("12345678-1234-5678-1234-567812345678"), b"session bytes")
+
+    assert store.get(reference) == b"session bytes"
+    assert "kkkk" not in repr(store)
+
+
+@pytest.mark.parametrize("invalid_key", [32, "k" * 32, [107] * 32, CoercibleKey()])
+def test_store_rejects_implicit_or_non_bytes_key_material_without_leaking_it(invalid_key):
+    """Implicit bytes coercion must not turn arbitrary values into usable encryption keys."""
+    with pytest.raises(TypeError, match="^session encryption key material must be bytes-like$") as failure:
+        EncryptedSessionStore({1: invalid_key}, active_key_version=1)
+
+    assert "kkkk" not in str(failure.value)
+    assert "107" not in str(failure.value)
 
 
 @pytest.mark.parametrize("ciphertext", [b"", b"n" * 11, b"n" * 12, b"n" * 27])

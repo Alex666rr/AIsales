@@ -81,7 +81,7 @@ class EncryptedSessionStore:
 
     def __init__(
         self,
-        keys: Mapping[int, bytes],
+        keys: Mapping[int, bytes | bytearray | memoryview],
         *,
         active_key_version: int,
         repository: CiphertextSessionRepository | None = None,
@@ -137,7 +137,9 @@ class EncryptedSessionStore:
         return self._repository.records()
 
     @staticmethod
-    def _validate_key(key: bytes) -> bytes:
+    def _validate_key(key: object) -> bytes:
+        if not isinstance(key, (bytes, bytearray, memoryview)):
+            raise TypeError("session encryption key material must be bytes-like")
         key_bytes = bytes(key)
         if len(key_bytes) not in (16, 24, 32):
             raise ValueError("AES-GCM keys must be 128, 192, or 256 bits")
