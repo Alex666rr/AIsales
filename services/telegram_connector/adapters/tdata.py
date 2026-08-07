@@ -1,6 +1,7 @@
 """Safe, signature-gated importer for the prototype TData format."""
 
 import io
+import gzip
 import posixpath
 import stat
 import tarfile
@@ -17,6 +18,71 @@ class TDataConverter(Protocol):
 _TDATA_SIGNATURE = b"TDATA\x00"
 _SCHEMA_VERSION = 1
 _SAFE_IMPORT_ERROR = "unsupported session import"
+_ZIP_COMPRESSION_METHODS = frozenset({zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED})
+
+
+class _ArchiveLimitExceeded(Exception):
+    """Internal sentinel: never expose stream or archive implementation details."""
+
+
+class _BoundedReader:
+    """Hard aggregate cap around every byte tarfile can receive after decompression."""
+
+    def __init__(self, source: object, limit: int) -> None:
+        self._source = source
+        self._remaining = limit
+        self._position = 0
+
+    def read(self, size: int = -1) -> bytes:
+        self._claim(size)
+        result = self._source.read(size)  # type: ignore[attr-defined]
+        self._record(result)
+        return result
+
+    def readinto(self, buffer: bytearray | memoryview) -> int:
+        self._claim(len(buffer))
+        reader = getattr(self._source, "readinto", None)
+        if reader is None:
+            result = self.read(len(buffer))
+            buffer[: len(result)] = result
+            return len(result)
+        count = reader(buffer)
+        if count is None:
+            return 0
+        self._record_count(count)
+        return count
+
+    def read1(self, size: int = -1) -> bytes:
+        return self.read(size)
+
+    def readinto1(self, buffer: bytearray | memoryview) -> int:
+        return self.readinto(buffer)
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        # Streaming tar parsing must not seek around the cap and re-read decompressed bytes.
+        raise _ArchiveLimitExceeded()
+
+    def tell(self) -> int:
+        return self._position
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def _claim(self, size: int) -> None:
+        if size is None or size < 0 or size > self._remaining:
+            raise _ArchiveLimitExceeded()
+
+    def _record(self, result: bytes) -> None:
+        self._record_count(len(result))
+
+    def _record_count(self, count: int) -> None:
+        if count < 0 or count > self._remaining:
+            raise _ArchiveLimitExceeded()
+        self._remaining -= count
+        self._position += count
 
 
 def _rejected() -> ValueError:
@@ -72,6 +138,8 @@ def _archive_member_payload(data: bytes, *, max_compressed_bytes: int, max_uncom
                     entry_type = stat.S_IFMT(mode)
                     if entry_type not in (0, stat.S_IFREG):
                         raise _rejected()
+                    if member.flag_bits & 0x1 or member.compress_type not in _ZIP_COMPRESSION_METHODS:
+                        raise _rejected()
                     total += member.file_size
                     if total > max_uncompressed_bytes:
                         raise _rejected()
@@ -85,40 +153,59 @@ def _archive_member_payload(data: bytes, *, max_compressed_bytes: int, max_uncom
                 if len(body) > max_uncompressed_bytes:
                     raise _rejected()
                 return body
-        # Streaming mode avoids materializing an attacker-controlled TAR member list.
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r|*") as archive:
-            total = 0
-            count = 0
-            seen: set[str] = set()
-            body: bytes | None = None
-            for member in archive:
-                count += 1
-                if count > 16:
+        if data.startswith(b"\x1f\x8b"):
+            decompressed = gzip.GzipFile(fileobj=io.BytesIO(data), mode="rb")
+        elif len(data) >= 512 and data[257:262] == b"ustar":
+            decompressed = io.BytesIO(data)
+        else:
+            raise _rejected()
+        # Streaming mode plus the outer limiter caps PAX/GNU metadata before tarfile parses it.
+        with decompressed:
+            with tarfile.open(
+                fileobj=_BoundedReader(decompressed, max_uncompressed_bytes), mode="r|"
+            ) as archive:
+                total = 0
+                count = 0
+                seen: set[str] = set()
+                body: bytes | None = None
+                for member in archive:
+                    count += 1
+                    if count > 16:
+                        raise _rejected()
+                    canonical, collision_key = _normalized_member_name(member.name)
+                    if collision_key in seen:
+                        raise _rejected()
+                    seen.add(collision_key)
+                    if member.isdir():
+                        continue
+                    if not member.isreg():
+                        raise _rejected()
+                    total += member.size
+                    if total > max_uncompressed_bytes:
+                        raise _rejected()
+                    if canonical != "tdata/session.bin" or body is not None:
+                        raise _rejected()
+                    source = archive.extractfile(member)
+                    if source is None:
+                        raise _rejected()
+                    with source:
+                        body = source.read(max_uncompressed_bytes + 1)
+                    if len(body) > max_uncompressed_bytes or len(body) != member.size:
+                        raise _rejected()
+                if body is None:
                     raise _rejected()
-                canonical, collision_key = _normalized_member_name(member.name)
-                if collision_key in seen:
-                    raise _rejected()
-                seen.add(collision_key)
-                if member.isdir():
-                    continue
-                if not member.isreg():
-                    raise _rejected()
-                total += member.size
-                if total > max_uncompressed_bytes:
-                    raise _rejected()
-                if canonical != "tdata/session.bin" or body is not None:
-                    raise _rejected()
-                source = archive.extractfile(member)
-                if source is None:
-                    raise _rejected()
-                with source:
-                    body = source.read(max_uncompressed_bytes + 1)
-                if len(body) > max_uncompressed_bytes or len(body) != member.size:
-                    raise _rejected()
-            if body is None:
-                raise _rejected()
-            return body
-    except (OSError, EOFError, tarfile.TarError, zipfile.BadZipFile, zipfile.LargeZipFile):
+                return body
+    except (
+        _ArchiveLimitExceeded,
+        OSError,
+        EOFError,
+        RuntimeError,
+        NotImplementedError,
+        ValueError,
+        tarfile.TarError,
+        zipfile.BadZipFile,
+        zipfile.LargeZipFile,
+    ):
         raise _rejected() from None
 
 

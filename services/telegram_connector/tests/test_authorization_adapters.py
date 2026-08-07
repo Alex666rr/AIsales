@@ -434,6 +434,68 @@ def test_tdata_streaming_tar_rejects_declared_bomb_and_excessive_members_before_
     assert converter.calls == 0
 
 
+@pytest.mark.parametrize("format_name", ["pax", "gnu"])
+def test_tdata_caps_gzip_tar_metadata_before_materializing_or_conversion(format_name):
+    """Ignoring PAX/GNU metadata would let a tiny gzip archive expand before member checks."""
+    archive = io.BytesIO()
+    if format_name == "pax":
+        tar_format = tarfile.PAX_FORMAT
+        headers = {"comment": "PAX-METADATA-SENTINEL-" + "x" * 4096}
+        name = "tdata/session.bin"
+    else:
+        tar_format = tarfile.GNU_FORMAT
+        headers = None
+        name = "gnu-longname-" + "x" * 4096
+    with tarfile.open(fileobj=archive, mode="w:gz", format=tar_format, pax_headers=headers) as bundle:
+        member = tarfile.TarInfo(name)
+        payload = tdata_payload()
+        member.size = len(payload)
+        bundle.addfile(member, io.BytesIO(payload))
+    converter = FakeConverter()
+    adapter = TDataAdapter(converter, max_compressed_bytes=4096, max_uncompressed_bytes=1024)
+
+    with pytest.raises(ValueError, match="^unsupported session import$") as failure:
+        run(adapter.convert(SessionMaterial(adapter="tdata", payload=archive.getvalue(), credentials={})))
+
+    assert converter.calls == 0
+    assert "PAX-METADATA-SENTINEL" not in str(failure.value)
+    assert "gnu-longname" not in str(failure.value)
+
+
+def _mutate_zip_field(data: bytes, signature: bytes, field_offset: int, value: int) -> bytes:
+    """Produce a malformed external ZIP fixture without relying on writer support."""
+    result = bytearray(data)
+    start = 0
+    while True:
+        index = result.find(signature, start)
+        if index < 0:
+            break
+        result[index + field_offset : index + field_offset + 2] = value.to_bytes(2, "little")
+        start = index + len(signature)
+    return bytes(result)
+
+
+@pytest.mark.parametrize("kind", ["encrypted", "unsupported-compression"])
+def test_tdata_rejects_zip_encryption_and_unknown_compression_without_detail_leaks(kind):
+    """Deferring unsupported ZIP features to extraction would leak member errors or details."""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("tdata/session.bin", tdata_payload())
+    if kind == "encrypted":
+        payload = _mutate_zip_field(archive.getvalue(), b"PK\x03\x04", 6, 1)
+        payload = _mutate_zip_field(payload, b"PK\x01\x02", 8, 1)
+    else:
+        payload = _mutate_zip_field(archive.getvalue(), b"PK\x03\x04", 8, 99)
+        payload = _mutate_zip_field(payload, b"PK\x01\x02", 10, 99)
+    converter = FakeConverter()
+
+    with pytest.raises(ValueError, match="^unsupported session import$") as failure:
+        run(TDataAdapter(converter).convert(SessionMaterial(adapter="tdata", payload=payload, credentials={})))
+
+    assert converter.calls == 0
+    assert "session.bin" not in str(failure.value)
+
+
 @pytest.mark.parametrize("entry_type", [stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK])
 def test_tdata_rejects_every_non_regular_zip_entry_before_conversion(entry_type):
     """Checking only symlinks would accept device or FIFO ZIP entries."""
