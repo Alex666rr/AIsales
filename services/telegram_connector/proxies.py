@@ -34,7 +34,7 @@ class ProxyConfig(BaseModel):
         raw_url = data.pop("url", None)
         try:
             if raw_url is not None:
-                if not isinstance(raw_url, str) or "endpoint" in data:
+                if not isinstance(raw_url, str) or "endpoint" in data or "username" in data or "password" in data:
                     raise ProxyConfigurationError()
                 endpoint, username, password = self._parse_url(raw_url)
                 data["endpoint"] = endpoint
@@ -51,6 +51,10 @@ class ProxyConfig(BaseModel):
                 if username is not None or password is not None:
                     raise ProxyConfigurationError()
             super().__init__(**data)
+            if self.username is not None and not self.username.get_secret_value():
+                raise ProxyConfigurationError()
+            if self.password is not None and self.username is None:
+                raise ProxyConfigurationError()
         except (ProxyConfigurationError, ValidationError, TypeError, ValueError) as error:
             if isinstance(error, ProxyConfigurationError):
                 raise
@@ -119,6 +123,17 @@ class ProxyHealth(BaseModel):
     available: bool
     ip_address: str | None
     latency_ms: int | None = Field(default=None, ge=0)
+    error_code: str | None = None
+
+
+class ProxyReservation(BaseModel):
+    """The authoritative assignment result, including cleanup ownership."""
+
+    model_config = ConfigDict(frozen=True)
+
+    proxy: ProxyConfig
+    newly_reserved: bool
+    account_override: bool
 
 
 class ProxyLease(BaseModel):
@@ -126,8 +141,13 @@ class ProxyLease(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    proxy: ProxyConfig
+    reservation: ProxyReservation
     health: ProxyHealth
+
+    @property
+    def proxy(self) -> ProxyConfig:
+        """Expose the assigned proxy without exposing cleanup mechanics to clients."""
+        return self.reservation.proxy
 
 
 class ProxyHealthChecker(Protocol):
@@ -144,11 +164,11 @@ class ProxyAssignmentRepository(Protocol):
     transaction.  A supervisor never performs a read-then-write reservation.
     """
 
-    async def reserve_assignment(self, account_id: UUID) -> ProxyConfig | None:
+    async def reserve_assignment(self, account_id: UUID) -> ProxyReservation | None:
         """Atomically resolve and reserve this account's persisted proxy."""
 
-    async def release_assignment(self, account_id: UUID) -> None:
-        """Release a previously reserved assignment."""
+    async def release_failed_reservation(self, account_id: UUID, reservation: ProxyReservation) -> None:
+        """Release only a newly created non-override lease after failed startup."""
 
 
 class InMemoryProxyAssignmentRepository:
@@ -173,26 +193,32 @@ class InMemoryProxyAssignmentRepository:
             else:
                 raise ValueError("unknown proxy")
 
-    async def reserve_assignment(self, account_id: UUID) -> ProxyConfig | None:
+    async def reserve_assignment(self, account_id: UUID) -> ProxyReservation | None:
         async with self._lock:
-            selected = self._overrides.get(account_id, self._default_proxy_id)
+            override = self._overrides.get(account_id)
+            selected = override if override is not None else self._default_proxy_id
             if selected is None:
                 return None
             proxy = self._proxies[selected]
             current = self._assignments.get(account_id)
             if current == selected:
-                return proxy
+                return ProxyReservation(proxy=proxy, newly_reserved=False, account_override=override is not None)
             assigned = sum(1 for proxy_id in self._assignments.values() if proxy_id == selected)
             if assigned >= proxy.capacity:
                 return None
             if current is not None:
                 self._assignments.pop(account_id, None)
             self._assignments[account_id] = selected
-            return proxy
+            return ProxyReservation(proxy=proxy, newly_reserved=True, account_override=override is not None)
 
-    async def release_assignment(self, account_id: UUID) -> None:
+    async def release_failed_reservation(self, account_id: UUID, reservation: ProxyReservation) -> None:
         async with self._lock:
-            self._assignments.pop(account_id, None)
+            if (
+                reservation.newly_reserved
+                and not reservation.account_override
+                and self._assignments.get(account_id) == reservation.proxy.proxy_id
+            ):
+                self._assignments.pop(account_id, None)
 
     async def assignments_for(self, proxy_id: UUID) -> tuple[UUID, ...]:
         async with self._lock:
@@ -208,7 +234,15 @@ class ProxyAssignmentService:
 
     async def acquire(self, account_id: UUID) -> ProxyLease | None:
         """Atomically reserve the configured proxy, then check that exact proxy only."""
-        proxy = await self._repository.reserve_assignment(account_id)
-        if proxy is None:
+        reservation = await self._repository.reserve_assignment(account_id)
+        if reservation is None:
             return None
-        return ProxyLease(proxy=proxy, health=await self._checker.check(proxy))
+        try:
+            health = await self._checker.check(reservation.proxy)
+        except Exception:
+            health = ProxyHealth(available=False, ip_address=None, latency_ms=None, error_code="proxy_unavailable")
+        return ProxyLease(reservation=reservation, health=health)
+
+    async def release_failed(self, account_id: UUID, lease: ProxyLease) -> None:
+        """Apply the repository's atomic failed-start cleanup policy."""
+        await self._repository.release_failed_reservation(account_id, lease.reservation)

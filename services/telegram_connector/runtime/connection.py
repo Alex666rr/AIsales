@@ -1,11 +1,12 @@
 """Safe, persisted connection-state and injected runtime protocols."""
 
 from collections.abc import Iterable
-from datetime import datetime
+import asyncio
+from datetime import UTC, datetime
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from telegram_connector.proxies import ProxyConfig
 from telegram_connector.session_store import SessionRef
@@ -22,6 +23,15 @@ class ConnectionHealth(BaseModel):
     latency_ms: int | None = Field(default=None, ge=0)
     error_code: str | None
 
+    @field_validator("last_seen_at")
+    @classmethod
+    def _utc_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return value.astimezone(UTC)
+
 
 class ConnectionRecord(BaseModel):
     """The full non-secret persisted state required to resume a connection."""
@@ -33,6 +43,17 @@ class ConnectionRecord(BaseModel):
     health: ConnectionHealth
     retry_count: int = Field(default=0, ge=0)
     retry_at: datetime | None = None
+    version: int = Field(default=0, ge=0)
+    lease_owner_id: UUID | None = None
+
+    @field_validator("retry_at")
+    @classmethod
+    def _utc_retry_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return value.astimezone(UTC)
 
 
 class ConnectionRepository(Protocol):
@@ -44,6 +65,15 @@ class ConnectionRepository(Protocol):
     async def save(self, record: ConnectionRecord) -> None:
         """Persist the next state before any retry is slept."""
 
+    async def try_claim(self, account_id: UUID, owner_id: UUID) -> ConnectionRecord | None:
+        """Atomically claim an unleased non-terminal record for one supervisor."""
+
+    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool) -> ConnectionRecord | None:
+        """CAS-save a claimed record; return ``None`` if it lost its claim/version race."""
+
+    async def force_terminal(self, account_id: UUID, state: Literal["paused", "archived"], now: datetime) -> ConnectionRecord:
+        """Atomically make pause/archive win and invalidate every outstanding claim."""
+
 
 class InMemoryConnectionRepository:
     """A test fake; production must provide a durable PostgreSQL implementation."""
@@ -51,13 +81,60 @@ class InMemoryConnectionRepository:
     def __init__(self, records: Iterable[ConnectionRecord] = ()) -> None:
         self._records = {record.account_id: record for record in records}
         self.history: list[ConnectionRecord] = []
+        self._lock = asyncio.Lock()
 
     async def get(self, account_id: UUID) -> ConnectionRecord | None:
         return self._records.get(account_id)
 
     async def save(self, record: ConnectionRecord) -> None:
-        self._records[record.account_id] = record
-        self.history.append(record)
+        async with self._lock:
+            self._records[record.account_id] = record
+            self.history.append(record)
+
+    async def try_claim(self, account_id: UUID, owner_id: UUID) -> ConnectionRecord | None:
+        async with self._lock:
+            record = self._records.get(account_id)
+            if record is None:
+                return None
+            if record.health.state in {"paused", "reauth_required", "blocked", "archived"}:
+                return record
+            if record.lease_owner_id is not None:
+                return None
+            claimed = record.model_copy(update={"version": record.version + 1, "lease_owner_id": owner_id})
+            self._records[account_id] = claimed
+            return claimed
+
+    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool) -> ConnectionRecord | None:
+        async with self._lock:
+            current = self._records.get(record.account_id)
+            if (
+                current is None
+                or current.version != record.version
+                or current.lease_owner_id != owner_id
+                or current.health.state == "archived"
+            ):
+                return None
+            saved = record.model_copy(
+                update={"version": record.version + 1, "lease_owner_id": None if release_lease else owner_id}
+            )
+            self._records[record.account_id] = saved
+            self.history.append(saved)
+            return saved
+
+    async def force_terminal(self, account_id: UUID, state: Literal["paused", "archived"], now: datetime) -> ConnectionRecord:
+        async with self._lock:
+            record = self._records.get(account_id)
+            if record is None:
+                raise KeyError("connection record was not found")
+            if record.health.state == "archived":
+                return record
+            health = record.health.model_copy(update={"state": state, "last_seen_at": now, "error_code": None})
+            saved = record.model_copy(
+                update={"health": health, "retry_at": None, "version": record.version + 1, "lease_owner_id": None}
+            )
+            self._records[account_id] = saved
+            self.history.append(saved)
+            return saved
 
 
 class TelegramClient(Protocol):

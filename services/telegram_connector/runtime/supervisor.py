@@ -2,9 +2,9 @@
 
 import asyncio
 from datetime import timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from telegram_connector.proxies import ProxyAssignmentRepository, ProxyAssignmentService, ProxyHealthChecker
+from telegram_connector.proxies import ProxyAssignmentRepository, ProxyAssignmentService, ProxyHealthChecker, ProxyLease
 from telegram_connector.runtime.connection import (
     AccountBlockedError,
     AuthorizationLostError,
@@ -47,7 +47,6 @@ class ConnectionSupervisor:
             raise ValueError("invalid reconnect bounds")
         self._repository = repository
         self._proxies = ProxyAssignmentService(proxy_repository, proxy_checker)
-        self._proxy_repository = proxy_repository
         self._factory = client_factory
         self._clock = clock
         self._sleeper = sleeper
@@ -57,7 +56,7 @@ class ConnectionSupervisor:
         self._tasks: dict[UUID, asyncio.Task[ConnectionHealth]] = {}
         self._clients: dict[UUID, TelegramClient] = {}
         self._locks: dict[UUID, asyncio.Lock] = {}
-        self._generations: dict[UUID, int] = {}
+        self._owner_id = uuid4()
 
     async def start(self, account_id: UUID) -> ConnectionHealth:
         """Start (or join) one connection loop; terminal persisted states remain terminal."""
@@ -69,8 +68,12 @@ class ConnectionSupervisor:
             elif account_id in self._clients:
                 return await self.health(account_id)
             else:
-                generation = self._generations.get(account_id, 0)
-                task = asyncio.create_task(self._run(account_id, generation))
+                claimed = await self._repository.try_claim(account_id, self._owner_id)
+                if claimed is None:
+                    return await self.health(account_id)
+                if claimed.health.state in _TERMINAL_STATES:
+                    return claimed.health
+                task = asyncio.create_task(self._run(account_id, claimed))
                 self._tasks[account_id] = task
         return await asyncio.shield(task)
 
@@ -96,10 +99,7 @@ class ConnectionSupervisor:
     async def _terminal_transition(self, account_id: UUID, state: str) -> ConnectionHealth:
         lock = self._locks.setdefault(account_id, asyncio.Lock())
         async with lock:
-            record = await self._required_record(account_id)
-            self._generations[account_id] = self._generations.get(account_id, 0) + 1
-            health = self._state(record, state=state, error_code=None)
-            await self._repository.save(record.model_copy(update={"health": health, "retry_at": None}))
+            record = await self._repository.force_terminal(account_id, state, self._clock.now())
             task = self._tasks.get(account_id)
             current = asyncio.current_task()
             if task is not None and task is not current and not task.done():
@@ -107,48 +107,52 @@ class ConnectionSupervisor:
             client = self._clients.pop(account_id, None)
         if client is not None:
             await self._safe_disconnect(client)
-        if task is not None and task is not asyncio.current_task():
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        await self._proxy_repository.release_assignment(account_id)
-        return await self.health(account_id)
+        return record.health
 
-    async def _run(self, account_id: UUID, generation: int) -> ConnectionHealth:
+    async def _run(self, account_id: UUID, record: ConnectionRecord) -> ConnectionHealth:
         try:
-            record = await self._required_record(account_id)
-            if record.health.state in _TERMINAL_STATES:
-                return record.health
-            while self._current(account_id, generation):
-                record = await self._required_record(account_id)
+            while True:
                 if record.health.state in _TERMINAL_STATES:
                     return record.health
                 if record.retry_at is not None and record.retry_at > self._clock.now():
                     await self._sleeper.sleep((record.retry_at - self._clock.now()).total_seconds())
-                    if not self._current(account_id, generation):
+                    if not await self._owns_claim(record):
                         return await self.health(account_id)
                     continue
                 lease = await self._proxies.acquire(account_id)
-                if not self._current(account_id, generation):
+                if not await self._owns_claim(record):
+                    await self._cleanup_failed_reservation(account_id, lease)
                     return await self.health(account_id)
                 if lease is None or not lease.health.available:
-                    return await self._save_state(
+                    await self._cleanup_failed_reservation(account_id, lease)
+                    saved = await self._save_state(
                         record,
                         state="blocked",
                         error_code="proxy_unavailable",
                         retry_at=None,
+                        release_lease=True,
                     )
+                    return saved.health if saved is not None else await self.health(account_id)
                 client: TelegramClient | None = None
                 try:
                     client = await self._factory.create(record.session_ref, lease.proxy)
+                    if not await self._owns_claim(record):
+                        await self._cleanup_failed_reservation(account_id, lease)
+                        await self._safe_disconnect(client)
+                        return await self.health(account_id)
                     self._clients[account_id] = client
                     await client.connect()
+                    if not await self._owns_claim(record):
+                        await self._cleanup_failed_reservation(account_id, lease)
+                        await self._drop_client(account_id, client)
+                        return await self.health(account_id)
                     if not await client.is_authorized():
                         raise AuthorizationLostError()
-                    if not self._current(account_id, generation):
+                    if not await self._owns_claim(record):
+                        await self._cleanup_failed_reservation(account_id, lease)
+                        await self._drop_client(account_id, client)
                         return await self.health(account_id)
-                    return await self._save_state(
+                    saved = await self._save_state(
                         record,
                         state="active",
                         error_code=None,
@@ -156,47 +160,69 @@ class ConnectionSupervisor:
                         latency_ms=lease.health.latency_ms,
                         retry_count=0,
                         retry_at=None,
+                        release_lease=True,
                     )
+                    if saved is None:
+                        await self._drop_client(account_id, client)
+                        return await self.health(account_id)
+                    return saved.health
                 except AuthorizationLostError:
-                    health = await self._save_state(
-                        record, state="reauth_required", error_code="authorization_lost", retry_at=None
+                    await self._cleanup_failed_reservation(account_id, lease)
+                    saved = await self._save_state(
+                        record, state="reauth_required", error_code="authorization_lost", retry_at=None, release_lease=True
                     )
                     await self._drop_client(account_id, client)
-                    return health
+                    return saved.health if saved is not None else await self.health(account_id)
                 except AccountBlockedError:
-                    health = await self._save_state(record, state="blocked", error_code="account_blocked", retry_at=None)
+                    await self._cleanup_failed_reservation(account_id, lease)
+                    saved = await self._save_state(
+                        record, state="blocked", error_code="account_blocked", retry_at=None, release_lease=True
+                    )
                     await self._drop_client(account_id, client)
-                    return health
+                    return saved.health if saved is not None else await self.health(account_id)
                 except FloodWaitError as error:
                     retries = record.retry_count + 1
                     retry_at = self._clock.now() + timedelta(seconds=error.retry_after_seconds)
-                    limited = await self._save_state(
-                        record,
-                        state="limited",
-                        error_code="rate_limited",
-                        retry_count=retries,
-                        retry_at=retry_at,
+                    exhausted = retries >= self._max_retries or error.retry_after_seconds > self._max_retry_after_seconds
+                    await self._cleanup_failed_reservation(account_id, lease)
+                    saved = await self._save_state(
+                        record, state="blocked" if exhausted else "limited",
+                        error_code="retry_exhausted" if exhausted else "rate_limited",
+                        retry_count=retries, retry_at=None if exhausted else retry_at, release_lease=exhausted,
                     )
                     await self._drop_client(account_id, client)
-                    if retries >= self._max_retries or error.retry_after_seconds > self._max_retry_after_seconds:
-                        return limited
+                    if saved is None:
+                        return await self.health(account_id)
+                    if exhausted:
+                        return saved.health
+                    record = saved
                     await self._sleeper.sleep(error.retry_after_seconds)
+                    if not await self._owns_claim(record):
+                        return await self.health(account_id)
                 except asyncio.CancelledError:
                     raise
                 except Exception:
                     retries = record.retry_count + 1
                     delay = min(float(2 ** (retries - 1)), self._max_backoff_seconds)
-                    quarantined = await self._save_state(
+                    exhausted = retries >= self._max_retries
+                    await self._cleanup_failed_reservation(account_id, lease)
+                    saved = await self._save_state(
                         record,
-                        state="quarantine",
-                        error_code="connection_failed",
+                        state="blocked" if exhausted else "quarantine",
+                        error_code="retry_exhausted" if exhausted else "connection_failed",
                         retry_count=retries,
-                        retry_at=self._clock.now() + timedelta(seconds=delay),
+                        retry_at=None if exhausted else self._clock.now() + timedelta(seconds=delay),
+                        release_lease=exhausted,
                     )
                     await self._drop_client(account_id, client)
-                    if retries >= self._max_retries:
-                        return quarantined
+                    if saved is None:
+                        return await self.health(account_id)
+                    if exhausted:
+                        return saved.health
+                    record = saved
                     await self._sleeper.sleep(delay)
+                    if not await self._owns_claim(record):
+                        return await self.health(account_id)
                 finally:
                     if client is not None and self._clients.get(account_id) is not client:
                         await self._safe_disconnect(client)
@@ -223,7 +249,8 @@ class ConnectionSupervisor:
         proxy_ip: str | None = None,
         latency_ms: int | None = None,
         retry_count: int | None = None,
-    ) -> ConnectionHealth:
+        release_lease: bool = False,
+    ) -> ConnectionRecord | None:
         health = self._state(
             record,
             state=state,
@@ -238,8 +265,7 @@ class ConnectionSupervisor:
                 "retry_at": retry_at,
             }
         )
-        await self._repository.save(updated)
-        return health
+        return await self._repository.save_claimed(updated, self._owner_id, release_lease=release_lease)
 
     def _state(
         self,
@@ -264,8 +290,13 @@ class ConnectionSupervisor:
             raise KeyError("connection record was not found")
         return record
 
-    def _current(self, account_id: UUID, generation: int) -> bool:
-        return self._generations.get(account_id, 0) == generation
+    async def _owns_claim(self, record: ConnectionRecord) -> bool:
+        current = await self._repository.get(record.account_id)
+        return current is not None and current.version == record.version and current.lease_owner_id == self._owner_id
+
+    async def _cleanup_failed_reservation(self, account_id: UUID, lease: ProxyLease | None) -> None:
+        if lease is not None:
+            await self._proxies.release_failed(account_id, lease)
 
     @staticmethod
     async def _safe_disconnect(client: TelegramClient) -> None:

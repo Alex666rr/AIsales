@@ -1,8 +1,10 @@
 """Lifecycle contracts for injected Telegram clients and persisted connection state."""
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID
+
+import pytest
 
 from telegram_connector.proxies import InMemoryProxyAssignmentRepository, ProxyConfig, ProxyHealth
 from telegram_connector.runtime.connection import (
@@ -92,19 +94,19 @@ def make_repository(state: str = "quarantine") -> tuple[InMemoryConnectionReposi
     )
 
 
-def make_supervisor(repository, factory, clock, sleeper) -> ConnectionSupervisor:
-    proxy_repository = InMemoryProxyAssignmentRepository(
+def make_supervisor(repository, factory, clock, sleeper, *, proxy_repository=None, proxy_checker=None, max_retries=2) -> ConnectionSupervisor:
+    proxy_repository = proxy_repository or InMemoryProxyAssignmentRepository(
         proxies=(ProxyConfig(proxy_id=UUID(int=1), url="socks5://edge.example:1080", capacity=5),),
         default_proxy_id=UUID(int=1),
     )
     return ConnectionSupervisor(
         repository=repository,
         proxy_repository=proxy_repository,
-        proxy_checker=AvailableProxyChecker(),
+        proxy_checker=proxy_checker or AvailableProxyChecker(),
         client_factory=factory,
         clock=clock,
         sleeper=sleeper,
-        max_retries=2,
+        max_retries=max_retries,
         max_backoff_seconds=10,
     )
 
@@ -126,6 +128,186 @@ def test_start_persists_active_health_and_restart_reconnects_from_persisted_stat
         assert len(restarted_factory.clients) == 1
 
     asyncio.run(scenario())
+
+
+def test_failed_new_default_proxy_reservation_is_released_but_preexisting_override_is_preserved():
+    """Retaining a failed new shared lease exhausts capacity; releasing an override loses operator intent."""
+    class FailingChecker:
+        async def check(self, proxy: ProxyConfig) -> ProxyHealth:
+            raise RuntimeError("CHECKER-SENTINEL-SECRET")
+
+    async def scenario():
+        clock = ManualClock()
+        proxy_repository = InMemoryProxyAssignmentRepository(
+            proxies=(ProxyConfig(proxy_id=UUID(int=1), url="socks5://edge.example:1080", capacity=1),),
+            default_proxy_id=UUID(int=1),
+        )
+        repository, _ = make_repository()
+        supervisor = make_supervisor(
+            repository,
+            ScriptedFactory([]),
+            clock,
+            AdvancingSleeper(clock),
+            proxy_repository=proxy_repository,
+            proxy_checker=FailingChecker(),
+        )
+        assert (await supervisor.start(UUID(int=10))).error_code == "proxy_unavailable"
+        assert await proxy_repository.assignments_for(UUID(int=1)) == ()
+
+        await proxy_repository.set_account_override(UUID(int=10), UUID(int=1))
+        repository, _ = make_repository()
+        supervisor = make_supervisor(
+            repository,
+            ScriptedFactory([]),
+            clock,
+            AdvancingSleeper(clock),
+            proxy_repository=proxy_repository,
+            proxy_checker=FailingChecker(),
+        )
+        assert (await supervisor.start(UUID(int=10))).error_code == "proxy_unavailable"
+        assert await proxy_repository.assignments_for(UUID(int=1)) == (UUID(int=10),)
+
+    asyncio.run(scenario())
+
+
+def test_two_supervisors_claim_one_cross_process_connection_lease():
+    """Process-local locks alone permit two supervisors sharing a repository to create duplicate clients."""
+    class BlockingClient(ScriptedClient):
+        def __init__(self, factory):
+            super().__init__([None])
+            self.factory = factory
+
+        async def connect(self) -> None:
+            self.factory.connected.set()
+            await self.factory.release.wait()
+
+    class BlockingFactory:
+        def __init__(self) -> None:
+            self.clients = []
+            self.connected = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def create(self, session, proxy):
+            client = BlockingClient(self)
+            self.clients.append(client)
+            return client
+
+    async def scenario():
+        repository, _ = make_repository()
+        clock = ManualClock()
+        factory = BlockingFactory()
+        first = make_supervisor(repository, factory, clock, AdvancingSleeper(clock))
+        second = make_supervisor(repository, factory, clock, AdvancingSleeper(clock))
+        first_start = asyncio.create_task(first.start(UUID(int=10)))
+        await factory.connected.wait()
+
+        second_health = await second.start(UUID(int=10))
+        assert second_health.state == "quarantine"
+        assert len(factory.clients) == 1
+
+        factory.release.set()
+        assert (await first_start).state == "active"
+
+    asyncio.run(scenario())
+
+
+def test_delayed_cancellation_resistant_active_save_cannot_overwrite_pause():
+    """A late active write must lose its CAS race after pause invalidates its lease and version."""
+    class DelayedActiveSaveRepository(InMemoryConnectionRepository):
+        def __init__(self, records):
+            super().__init__(records)
+            self.active_save_started = asyncio.Event()
+            self.release_active_save = asyncio.Event()
+
+        async def save_claimed(self, record, owner_id, *, release_lease):
+            if record.health.state == "active":
+                self.active_save_started.set()
+                try:
+                    await self.release_active_save.wait()
+                except asyncio.CancelledError:
+                    await self.release_active_save.wait()
+            return await super().save_claimed(record, owner_id, release_lease=release_lease)
+
+    async def scenario():
+        initial, _ = make_repository()
+        seed = await initial.get(UUID(int=10))
+        assert seed is not None
+        repository = DelayedActiveSaveRepository((seed,))
+        clock = ManualClock()
+        factory = ScriptedFactory([None])
+        supervisor = make_supervisor(repository, factory, clock, AdvancingSleeper(clock))
+        starting = asyncio.create_task(supervisor.start(UUID(int=10)))
+        await repository.active_save_started.wait()
+
+        assert (await supervisor.pause(UUID(int=10))).state == "paused"
+        repository.release_active_save.set()
+        assert (await starting).state == "paused"
+        assert (await supervisor.health(UUID(int=10))).state == "paused"
+        assert factory.clients[0].disconnected is True
+
+    asyncio.run(scenario())
+
+
+def test_exhausted_retry_budget_is_durable_and_a_restart_refuses_to_retry():
+    """Leaving exhausted failures quarantined lets a new process silently reset the retry budget."""
+    async def scenario():
+        repository, _ = make_repository()
+        clock = ManualClock()
+        first_factory = ScriptedFactory([RuntimeError("transient")])
+        first = make_supervisor(repository, first_factory, clock, AdvancingSleeper(clock), max_retries=1)
+
+        exhausted = await first.start(UUID(int=10))
+        assert (exhausted.state, exhausted.error_code) == ("blocked", "retry_exhausted")
+
+        restarted_factory = ScriptedFactory([None])
+        restarted = make_supervisor(repository, restarted_factory, clock, AdvancingSleeper(clock), max_retries=1)
+        assert (await restarted.start(UUID(int=10))).error_code == "retry_exhausted"
+        assert restarted_factory.clients == []
+
+    asyncio.run(scenario())
+
+
+def test_archived_state_is_absorbing_for_pause_stop_start_and_archive():
+    """Allowing pause or stop to rewrite archived would resurrect a deliberately retired session."""
+    async def scenario():
+        repository, _ = make_repository()
+        clock = ManualClock()
+        supervisor = make_supervisor(repository, ScriptedFactory([]), clock, AdvancingSleeper(clock))
+
+        assert (await supervisor.archive(UUID(int=10))).state == "archived"
+        assert (await supervisor.pause(UUID(int=10))).state == "archived"
+        assert (await supervisor.stop(UUID(int=10))).state == "archived"
+        assert (await supervisor.start(UUID(int=10))).state == "archived"
+        assert (await supervisor.archive(UUID(int=10))).state == "archived"
+
+    asyncio.run(scenario())
+
+
+def test_health_and_retry_timestamps_normalize_to_utc_and_reject_naive_values():
+    """Naive persisted timestamps make retry ordering and serialization depend on process locale."""
+    offset = datetime(2026, 8, 7, 14, tzinfo=timezone(timedelta(hours=7)))
+    health = ConnectionHealth(
+        state="active", last_seen_at=offset, proxy_ip=None, latency_ms=None, error_code=None
+    )
+    record = ConnectionRecord(
+        account_id=UUID(int=10),
+        session_ref=SessionRef(account_id=UUID(int=10), session_id=UUID(int=11), key_version=1),
+        health=health,
+        retry_at=offset,
+    )
+
+    assert health.last_seen_at == datetime(2026, 8, 7, 7, tzinfo=UTC)
+    assert record.retry_at == datetime(2026, 8, 7, 7, tzinfo=UTC)
+    assert ConnectionRecord.model_validate_json(record.model_dump_json()) == record
+    with pytest.raises(ValueError):
+        ConnectionHealth(state="active", last_seen_at=datetime(2026, 8, 7), proxy_ip=None, latency_ms=None, error_code=None)
+    with pytest.raises(ValueError):
+        ConnectionRecord(
+            account_id=UUID(int=10),
+            session_ref=SessionRef(account_id=UUID(int=10), session_id=UUID(int=11), key_version=1),
+            health=health,
+            retry_at=datetime(2026, 8, 7),
+        )
 
 
 def test_transient_failure_persists_quarantine_before_bounded_reconnect():

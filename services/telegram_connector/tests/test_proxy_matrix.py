@@ -24,6 +24,11 @@ class UnavailableProxyChecker:
         return ProxyHealth(available=False, ip_address=None, latency_ms=None)
 
 
+class SecretBearingCheckerFailure:
+    async def check(self, proxy: ProxyConfig) -> ProxyHealth:
+        raise RuntimeError("PROXY-PROBE-SENTINEL-SECRET")
+
+
 @pytest.mark.parametrize(
     ("url", "expected_endpoint"),
     [
@@ -123,3 +128,41 @@ def test_unavailable_proxy_is_not_assigned_as_usable_connection():
         assert assignment.health.available is False
 
     asyncio.run(scenario())
+
+
+def test_probe_exception_becomes_safe_unavailable_health_without_secret_leak():
+    """Letting checker exceptions escape would expose credentials through caller errors or logs."""
+    async def scenario():
+        repository = InMemoryProxyAssignmentRepository(
+            proxies=(ProxyConfig(proxy_id=UUID(int=1), url="http://edge.example:8080", capacity=1),),
+            default_proxy_id=UUID(int=1),
+        )
+
+        lease = await ProxyAssignmentService(repository, SecretBearingCheckerFailure()).acquire(UUID(int=1))
+
+        assert lease is not None
+        assert lease.health.available is False
+        assert lease.health.error_code == "proxy_unavailable"
+        assert "PROXY-PROBE-SENTINEL-SECRET" not in str(lease)
+        assert "PROXY-PROBE-SENTINEL-SECRET" not in str(lease.model_dump())
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("url", "kwargs"),
+    [
+        ("socks5://:password@edge.example:1080", {}),
+        ("socks5://edge.example:1080", {"username": ""}),
+        ("socks5://edge.example:1080", {"password": "password"}),
+        ("socks5://url-user:url-password@edge.example:1080", {"username": "other"}),
+    ],
+)
+def test_proxy_rejects_ambiguous_or_incomplete_separate_credentials_without_leaks(url, kwargs):
+    """Accepting empty or conflicting credential forms creates an unsafe client URL boundary."""
+    with pytest.raises(ValueError) as failure:
+        ProxyConfig(proxy_id=UUID(int=1), url=url, **kwargs)
+
+    assert str(failure.value) == "invalid proxy configuration"
+    assert "password" not in str(failure.value)
+    assert "url-user" not in str(failure.value)
