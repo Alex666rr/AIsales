@@ -32,4 +32,4 @@ pythonpath = ["."]
 
 [tool.setuptools]
 package-dir = {"" = "services"}
-packages = ["telegram_connector", "telegram_connector.adapters"]
+packages = ["telegram_connector", "telegram_connector.adapters", "telegram_connector.runtime"]

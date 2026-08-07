@@ -21,6 +21,9 @@ from .session_store import (
     SessionRef,
     StoredSessionCiphertext,
 )
+from .proxies import ProxyConfig, ProxyHealth
+from .runtime.connection import ConnectionHealth
+from .runtime.supervisor import ConnectionSupervisor
 
 __all__ = [
     "ConnectorSettings",
@@ -42,4 +45,8 @@ __all__ = [
     "TelethonFileAdapter",
     "TelethonStringAdapter",
     "UnsafeQuarantinedUpload",
+    "ConnectionHealth",
+    "ConnectionSupervisor",
+    "ProxyConfig",
+    "ProxyHealth",
 ]
