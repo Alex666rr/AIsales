@@ -79,7 +79,7 @@ class ConnectionRepository(Protocol):
     async def try_claim(self, account_id: UUID, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
         """Atomically claim an unleased non-terminal record for one supervisor."""
 
-    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool) -> ConnectionRecord | None:
+    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool, now: datetime | None = None) -> ConnectionRecord | None:
         """CAS-save a claimed record; return ``None`` if it lost its claim/version race."""
 
     async def force_terminal(self, account_id: UUID, state: Literal["paused", "archived"], now: datetime) -> ConnectionRecord:
@@ -118,8 +118,9 @@ class InMemoryConnectionRepository:
             self._records[account_id] = claimed
             return claimed
 
-    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool) -> ConnectionRecord | None:
+    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool, now: datetime | None = None) -> ConnectionRecord | None:
         async with self._lock:
+            authoritative_now = now or datetime.now(UTC)
             current = self._records.get(record.account_id)
             if (
                 current is None
@@ -127,6 +128,7 @@ class InMemoryConnectionRepository:
                 or current.lease_owner_id != owner_id
                 or current.health.state == "archived"
                 or current.fence_token != record.fence_token
+                or (current.lease_expires_at is not None and current.lease_expires_at <= authoritative_now)
             ):
                 return None
             saved = record.model_copy(
@@ -157,7 +159,7 @@ class InMemoryConnectionRepository:
             if (
                 current is None or current.version != record.version or current.lease_owner_id != owner_id
                 or current.fence_token != record.fence_token or current.lease_expires_at is None
-                or current.lease_expires_at <= now or current.health.state != "active"
+                or current.lease_expires_at <= now or current.health.state in {"paused", "reauth_required", "blocked", "archived"}
             ):
                 return None
             saved = record.model_copy(update={"version": record.version + 1, "lease_expires_at": now + timedelta(seconds=lease_seconds)})

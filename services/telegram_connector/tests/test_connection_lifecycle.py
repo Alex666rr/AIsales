@@ -115,6 +115,7 @@ def make_supervisor(repository, factory, clock, sleeper, *, proxy_repository=Non
         max_backoff_seconds=10,
         monitor_sleeper=monitor_sleeper or PassiveMonitorSleeper(),
         lease_duration_seconds=lease_duration_seconds,
+        heartbeat_interval_seconds=lease_duration_seconds / 3,
     )
 
 
@@ -227,14 +228,14 @@ def test_delayed_cancellation_resistant_active_save_cannot_overwrite_pause():
             self.active_save_started = asyncio.Event()
             self.release_active_save = asyncio.Event()
 
-        async def save_claimed(self, record, owner_id, *, release_lease):
+        async def save_claimed(self, record, owner_id, *, release_lease, now=None):
             if record.health.state == "active":
                 self.active_save_started.set()
                 try:
                     await self.release_active_save.wait()
                 except asyncio.CancelledError:
                     await self.release_active_save.wait()
-            return await super().save_claimed(record, owner_id, release_lease=release_lease)
+            return await super().save_claimed(record, owner_id, release_lease=release_lease, now=now)
 
     async def scenario():
         initial, _ = make_repository()

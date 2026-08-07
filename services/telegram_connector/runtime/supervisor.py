@@ -1,6 +1,7 @@
 """A single-flight, persistence-first connection supervisor."""
 
 import asyncio
+import math
 from datetime import timedelta
 from uuid import UUID, uuid4
 
@@ -46,7 +47,7 @@ class ConnectionSupervisor:
         heartbeat_interval_seconds: float = 15.0,
         monitor_sleeper: Sleeper | None = None,
     ) -> None:
-        if max_retries < 1 or max_backoff_seconds <= 0 or max_retry_after_seconds < 1 or lease_duration_seconds <= 0 or heartbeat_interval_seconds <= 0:
+        if max_retries < 1 or max_backoff_seconds <= 0 or max_retry_after_seconds < 1 or not all(math.isfinite(value) and value > 0 for value in (lease_duration_seconds, heartbeat_interval_seconds)) or heartbeat_interval_seconds * 3 > lease_duration_seconds:
             raise ValueError("invalid reconnect bounds")
         self._repository = repository
         self._proxies = ProxyAssignmentService(proxy_repository, proxy_checker)
@@ -111,18 +112,22 @@ class ConnectionSupervisor:
             current = asyncio.current_task()
             if task is not None and task is not current and not task.done():
                 task.cancel()
-            client = self._clients.pop(account_id, None)
-        if client is not None:
-            await self._safe_disconnect(client)
-        monitor = self._monitor_tasks.pop(account_id, None)
-        if monitor is not None:
-            monitor.cancel()
-        await self._proxies.release_terminal(account_id)
+            client = self._clients.get(account_id)
+        cleanup = asyncio.create_task(self._terminal_cleanup(account_id, client))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await asyncio.shield(cleanup)
+            raise
         return record.health
 
     async def _run(self, account_id: UUID, record: ConnectionRecord) -> ConnectionHealth:
         try:
             while True:
+                renewed = await self._repository.renew_lease(record, self._owner_id, self._clock.now(), lease_seconds=self._lease_duration_seconds)
+                if renewed is None:
+                    return await self.health(account_id)
+                record = renewed
                 if record.health.state in _TERMINAL_STATES:
                     return record.health
                 if record.retry_at is not None and record.retry_at > self._clock.now():
@@ -277,7 +282,7 @@ class ConnectionSupervisor:
                 "retry_at": retry_at,
             }
         )
-        return await self._repository.save_claimed(updated, self._owner_id, release_lease=release_lease)
+        return await self._repository.save_claimed(updated, self._owner_id, release_lease=release_lease, now=self._clock.now())
 
     def _state(
         self,
@@ -304,7 +309,22 @@ class ConnectionSupervisor:
 
     async def _owns_claim(self, record: ConnectionRecord) -> bool:
         current = await self._repository.get(record.account_id)
-        return current is not None and current.version == record.version and current.lease_owner_id == self._owner_id and current.fence_token == record.fence_token
+        return current is not None and current.version == record.version and current.lease_owner_id == self._owner_id and current.fence_token == record.fence_token and current.lease_expires_at is not None and current.lease_expires_at > self._clock.now()
+
+    async def _terminal_cleanup(self, account_id: UUID, client: TelegramClient | None) -> None:
+        try:
+            monitor = self._monitor_tasks.pop(account_id, None)
+            if monitor is not None:
+                monitor.cancel()
+                try:
+                    await monitor
+                except asyncio.CancelledError:
+                    pass
+            if client is not None:
+                await self._safe_disconnect(client)
+                self._clients.pop(account_id, None)
+        finally:
+            await self._proxies.release_terminal(account_id)
 
     async def _cleanup_failed_reservation(self, account_id: UUID, lease: ProxyLease | None) -> None:
         if lease is not None:
