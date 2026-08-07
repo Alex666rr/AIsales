@@ -77,7 +77,7 @@ class ScriptedFactory:
         return client
 
 
-def make_repository(state: str = "quarantine") -> tuple[InMemoryConnectionRepository, SessionRef]:
+def make_repository(state: str = "quarantine", repository_clock=None) -> tuple[InMemoryConnectionRepository, SessionRef]:
     session = SessionRef(account_id=UUID(int=10), session_id=UUID(int=11), key_version=1)
     return (
         InMemoryConnectionRepository(
@@ -93,7 +93,7 @@ def make_repository(state: str = "quarantine") -> tuple[InMemoryConnectionReposi
                         error_code=None,
                     ),
                 ),
-            )
+            ), clock=repository_clock
         ),
         session,
     )
@@ -122,8 +122,8 @@ def make_supervisor(repository, factory, clock, sleeper, *, proxy_repository=Non
 def test_start_persists_active_health_and_restart_reconnects_from_persisted_state():
     """Using only in-memory health would lose the connection contract after a process restart."""
     async def scenario():
-        repository, _ = make_repository()
         clock = ManualClock()
+        repository, _ = make_repository(repository_clock=clock)
         first_factory = ScriptedFactory([None])
         first = make_supervisor(repository, first_factory, clock, AdvancingSleeper(clock))
 
@@ -202,8 +202,8 @@ def test_two_supervisors_claim_one_cross_process_connection_lease():
             return client
 
     async def scenario():
-        repository, _ = make_repository()
         clock = ManualClock()
+        repository, _ = make_repository(repository_clock=clock)
         factory = BlockingFactory()
         first = make_supervisor(repository, factory, clock, AdvancingSleeper(clock))
         second = make_supervisor(repository, factory, clock, AdvancingSleeper(clock))
@@ -228,14 +228,14 @@ def test_delayed_cancellation_resistant_active_save_cannot_overwrite_pause():
             self.active_save_started = asyncio.Event()
             self.release_active_save = asyncio.Event()
 
-        async def save_claimed(self, record, owner_id, *, release_lease, now=None):
+        async def save_claimed(self, record, owner_id, *, release_lease):
             if record.health.state == "active":
                 self.active_save_started.set()
                 try:
                     await self.release_active_save.wait()
                 except asyncio.CancelledError:
                     await self.release_active_save.wait()
-            return await super().save_claimed(record, owner_id, release_lease=release_lease, now=now)
+            return await super().save_claimed(record, owner_id, release_lease=release_lease)
 
     async def scenario():
         initial, _ = make_repository()
@@ -308,15 +308,34 @@ def test_expired_fenced_lease_can_be_reclaimed_and_rejects_old_owner_save():
         clock = ManualClock()
         owner_one = UUID(int=101)
         owner_two = UUID(int=102)
-        first = await repository.try_claim(UUID(int=10), owner_one, clock.now(), lease_seconds=5)
+        repository, _ = make_repository(repository_clock=clock)
+        first = await repository.try_claim(UUID(int=10), owner_one, lease_seconds=5)
         assert first is not None
         clock.value += timedelta(seconds=6)
-        second = await repository.try_claim(UUID(int=10), owner_two, clock.now(), lease_seconds=5)
+        second = await repository.try_claim(UUID(int=10), owner_two, lease_seconds=5)
         assert second is not None
         assert second.fence_token > first.fence_token
 
         old_active = first.model_copy(update={"health": first.health.model_copy(update={"state": "active"})})
         assert await repository.save_claimed(old_active, owner_one, release_lease=False) is None
+
+    asyncio.run(scenario())
+
+
+def test_repository_clock_rejects_backdated_owner_after_expiry_and_reclaims_at_boundary():
+    """Accepting worker time would let a stalled process renew or save after repository lease expiry."""
+    async def scenario():
+        clock = ManualClock()
+        repository, _ = make_repository(repository_clock=clock)
+        first = await repository.try_claim(UUID(int=10), UUID(int=101), lease_seconds=5)
+        assert first is not None
+        clock.value += timedelta(seconds=5)
+
+        assert await repository.renew_lease(first, UUID(int=101), lease_seconds=5) is None
+        assert await repository.save_claimed(first, UUID(int=101), release_lease=False) is None
+        second = await repository.try_claim(UUID(int=10), UUID(int=102), lease_seconds=5)
+        assert second is not None
+        assert second.fence_token > first.fence_token
 
     asyncio.run(scenario())
 

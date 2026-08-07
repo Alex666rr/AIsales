@@ -76,26 +76,27 @@ class ConnectionRepository(Protocol):
     async def save(self, record: ConnectionRecord) -> None:
         """Persist the next state before any retry is slept."""
 
-    async def try_claim(self, account_id: UUID, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
+    async def try_claim(self, account_id: UUID, owner_id: UUID, *, lease_seconds: float) -> ConnectionRecord | None:
         """Atomically claim an unleased non-terminal record for one supervisor."""
 
-    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool, now: datetime | None = None) -> ConnectionRecord | None:
+    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool) -> ConnectionRecord | None:
         """CAS-save a claimed record; return ``None`` if it lost its claim/version race."""
 
     async def force_terminal(self, account_id: UUID, state: Literal["paused", "archived"], now: datetime) -> ConnectionRecord:
         """Atomically make pause/archive win and invalidate every outstanding claim."""
 
-    async def renew_lease(self, record: ConnectionRecord, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
+    async def renew_lease(self, record: ConnectionRecord, owner_id: UUID, *, lease_seconds: float) -> ConnectionRecord | None:
         """Advance version while retaining the owner and fencing token for a live client."""
 
 
 class InMemoryConnectionRepository:
     """A test fake; production must provide a durable PostgreSQL implementation."""
 
-    def __init__(self, records: Iterable[ConnectionRecord] = ()) -> None:
+    def __init__(self, records: Iterable[ConnectionRecord] = (), *, clock: "RepositoryClock | None" = None) -> None:
         self._records = {record.account_id: record for record in records}
         self.history: list[ConnectionRecord] = []
         self._lock = asyncio.Lock()
+        self._clock = clock or _SystemRepositoryClock()
 
     async def get(self, account_id: UUID) -> ConnectionRecord | None:
         return self._records.get(account_id)
@@ -105,8 +106,9 @@ class InMemoryConnectionRepository:
             self._records[record.account_id] = record
             self.history.append(record)
 
-    async def try_claim(self, account_id: UUID, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
+    async def try_claim(self, account_id: UUID, owner_id: UUID, *, lease_seconds: float) -> ConnectionRecord | None:
         async with self._lock:
+            now = self._clock.now()
             record = self._records.get(account_id)
             if record is None:
                 return None
@@ -118,9 +120,9 @@ class InMemoryConnectionRepository:
             self._records[account_id] = claimed
             return claimed
 
-    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool, now: datetime | None = None) -> ConnectionRecord | None:
+    async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool) -> ConnectionRecord | None:
         async with self._lock:
-            authoritative_now = now or datetime.now(UTC)
+            authoritative_now = self._clock.now()
             current = self._records.get(record.account_id)
             if (
                 current is None
@@ -153,8 +155,9 @@ class InMemoryConnectionRepository:
             self.history.append(saved)
             return saved
 
-    async def renew_lease(self, record: ConnectionRecord, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
+    async def renew_lease(self, record: ConnectionRecord, owner_id: UUID, *, lease_seconds: float) -> ConnectionRecord | None:
         async with self._lock:
+            now = self._clock.now()
             current = self._records.get(record.account_id)
             if (
                 current is None or current.version != record.version or current.lease_owner_id != owner_id
@@ -165,6 +168,16 @@ class InMemoryConnectionRepository:
             saved = record.model_copy(update={"version": record.version + 1, "lease_expires_at": now + timedelta(seconds=lease_seconds)})
             self._records[record.account_id] = saved
             return saved
+
+
+class RepositoryClock(Protocol):
+    """Database-time boundary; PostgreSQL implementations use clock_timestamp()."""
+    def now(self) -> datetime: ...
+
+
+class _SystemRepositoryClock:
+    def now(self) -> datetime:
+        return datetime.now(UTC)
 
 
 class TelegramClient(Protocol):

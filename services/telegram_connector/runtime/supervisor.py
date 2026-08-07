@@ -76,7 +76,7 @@ class ConnectionSupervisor:
             elif account_id in self._clients:
                 return await self.health(account_id)
             else:
-                claimed = await self._repository.try_claim(account_id, self._owner_id, self._clock.now(), lease_seconds=self._lease_duration_seconds)
+                claimed = await self._repository.try_claim(account_id, self._owner_id, lease_seconds=self._lease_duration_seconds)
                 if claimed is None:
                     return await self.health(account_id)
                 if claimed.health.state in _TERMINAL_STATES:
@@ -124,7 +124,7 @@ class ConnectionSupervisor:
     async def _run(self, account_id: UUID, record: ConnectionRecord) -> ConnectionHealth:
         try:
             while True:
-                renewed = await self._repository.renew_lease(record, self._owner_id, self._clock.now(), lease_seconds=self._lease_duration_seconds)
+                renewed = await self._repository.renew_lease(record, self._owner_id, lease_seconds=self._lease_duration_seconds)
                 if renewed is None:
                     return await self.health(account_id)
                 record = renewed
@@ -282,7 +282,7 @@ class ConnectionSupervisor:
                 "retry_at": retry_at,
             }
         )
-        return await self._repository.save_claimed(updated, self._owner_id, release_lease=release_lease, now=self._clock.now())
+        return await self._repository.save_claimed(updated, self._owner_id, release_lease=release_lease)
 
     def _state(
         self,
@@ -334,7 +334,7 @@ class ConnectionSupervisor:
         try:
             while True:
                 await self._monitor_sleeper.sleep(self._heartbeat_interval_seconds)
-                renewed = await self._repository.renew_lease(record, self._owner_id, self._clock.now(), lease_seconds=self._lease_duration_seconds)
+                renewed = await self._repository.renew_lease(record, self._owner_id, lease_seconds=self._lease_duration_seconds)
                 if renewed is None:
                     await self._drop_client(account_id, client)
                     return
