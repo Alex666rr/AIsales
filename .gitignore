@@ -17,6 +17,8 @@ tdata/
 sessions/
 *.session
 *.session-journal
+tests/fixtures/telegram/*
+!tests/fixtures/telegram/README.md
 
 # Customer exports and backups
 exports/
