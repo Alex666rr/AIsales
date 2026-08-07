@@ -1,10 +1,10 @@
 """Safe, signature-gated importer for the prototype TData format."""
 
 import io
+import posixpath
 import stat
 import tarfile
 import zipfile
-from collections.abc import Awaitable, Callable
 from typing import Protocol
 
 from .base import SessionMaterial, SessionProbeResult
@@ -23,9 +23,16 @@ def _rejected() -> ValueError:
     return ValueError(_SAFE_IMPORT_ERROR)
 
 
-def _safe_member_name(name: str) -> bool:
-    normalized = name.replace("\\", "/")
-    return bool(normalized) and not normalized.startswith("/") and ":" not in normalized and ".." not in normalized.split("/")
+def _normalized_member_name(name: str) -> tuple[str, str]:
+    """Return canonical path and collision key, rejecting archive traversal syntax."""
+    raw = name.replace("\\", "/")
+    if not raw or raw.startswith("/") or ":" in raw:
+        raise _rejected()
+    normalized = posixpath.normpath(raw)
+    if normalized in {".", ".."} or normalized.startswith("../"):
+        raise _rejected()
+    canonical = normalized + "/" if raw.endswith("/") else normalized
+    return canonical, normalized
 
 
 def _validate_envelope(data: bytes, *, signature: bytes, max_uncompressed_bytes: int) -> bytes:
@@ -49,44 +56,66 @@ def _archive_member_payload(data: bytes, *, max_compressed_bytes: int, max_uncom
                 if not members or len(members) > 16:
                     raise _rejected()
                 total = 0
-                files = []
+                seen: set[str] = set()
+                session_member = None
                 for member in members:
-                    if not _safe_member_name(member.filename) or stat.S_ISLNK(member.external_attr >> 16):
+                    canonical, collision_key = _normalized_member_name(member.filename)
+                    if collision_key in seen:
                         raise _rejected()
+                    seen.add(collision_key)
                     if member.is_dir():
+                        entry_type = stat.S_IFMT(member.external_attr >> 16)
+                        if entry_type not in (0, stat.S_IFDIR):
+                            raise _rejected()
                         continue
+                    mode = member.external_attr >> 16
+                    entry_type = stat.S_IFMT(mode)
+                    if entry_type not in (0, stat.S_IFREG):
+                        raise _rejected()
                     total += member.file_size
                     if total > max_uncompressed_bytes:
                         raise _rejected()
-                    files.append(member)
-                if len(files) != 1 or files[0].filename != "tdata/session.bin":
+                    if canonical != "tdata/session.bin" or session_member is not None:
+                        raise _rejected()
+                    session_member = member
+                if session_member is None:
                     raise _rejected()
-                with archive.open(files[0]) as source:
+                with archive.open(session_member) as source:
                     body = source.read(max_uncompressed_bytes + 1)
                 if len(body) > max_uncompressed_bytes:
                     raise _rejected()
                 return body
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as archive:
-            members = archive.getmembers()
-            if not members or len(members) > 16:
-                raise _rejected()
+        # Streaming mode avoids materializing an attacker-controlled TAR member list.
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r|*") as archive:
             total = 0
-            files = []
-            for member in members:
-                if not _safe_member_name(member.name) or not member.isreg():
+            count = 0
+            seen: set[str] = set()
+            body: bytes | None = None
+            for member in archive:
+                count += 1
+                if count > 16:
+                    raise _rejected()
+                canonical, collision_key = _normalized_member_name(member.name)
+                if collision_key in seen:
+                    raise _rejected()
+                seen.add(collision_key)
+                if member.isdir():
+                    continue
+                if not member.isreg():
                     raise _rejected()
                 total += member.size
                 if total > max_uncompressed_bytes:
                     raise _rejected()
-                files.append(member)
-            if len(files) != 1 or files[0].name != "tdata/session.bin":
-                raise _rejected()
-            source = archive.extractfile(files[0])
-            if source is None:
-                raise _rejected()
-            with source:
-                body = source.read(max_uncompressed_bytes + 1)
-            if len(body) > max_uncompressed_bytes:
+                if canonical != "tdata/session.bin" or body is not None:
+                    raise _rejected()
+                source = archive.extractfile(member)
+                if source is None:
+                    raise _rejected()
+                with source:
+                    body = source.read(max_uncompressed_bytes + 1)
+                if len(body) > max_uncompressed_bytes or len(body) != member.size:
+                    raise _rejected()
+            if body is None:
                 raise _rejected()
             return body
     except (OSError, EOFError, tarfile.TarError, zipfile.BadZipFile, zipfile.LargeZipFile):

@@ -6,7 +6,7 @@ from typing import Protocol, cast
 from uuid import UUID
 
 from .base import SessionMaterial, SessionProbeResult
-from .phone import AuthStep, _ChallengeStore, _step
+from .phone import AuthStep, _ChallengeStore
 
 
 class QrAuthorizationClient(Protocol):
@@ -16,11 +16,11 @@ class QrAuthorizationClient(Protocol):
 
 
 def _is_qr_expired(error: Exception) -> bool:
-    return error.__class__.__name__ in {"QrExpired", "SessionPasswordNeededError", "LoginTokenExpiredError"}
+    return error.__class__.__name__ in {"QrExpired", "LoginTokenExpiredError"}
 
 
 class QRAdapter:
-    """Authorize a user using an expiring, non-replayable QR challenge."""
+    """Authorize a user using owner-bound, non-replayable QR challenges."""
 
     name = "qr"
     session_kind = "mtproto_user"
@@ -36,44 +36,30 @@ class QRAdapter:
         self._client_factory = client_factory
         self._challenges = _ChallengeStore(ttl=ttl, capacity=capacity, now=now)
 
-    async def start(self) -> AuthStep:
+    async def start(self, owner_id: object) -> AuthStep:
+        self._challenges._require_owner(owner_id)
         try:
             client = self._client_factory()
-        except Exception:
-            return self._challenges.failed()
-        try:
             token = await client.request_qr()
         except Exception:
-            # A generated ID still lets callers handle the failure uniformly without secrets.
-            return self._challenges.create(client=client).model_copy(
-                update={"state": "failed", "safe_message": "Authorization could not be completed."}
-            )
-        return self._challenges.create(client=client, qr_token=token)
+            return await self._challenges.failed()
+        return await self._challenges.create(owner_id=owner_id, client=client, qr_token=token)
 
-    async def complete(self, challenge_id: UUID) -> AuthStep:
-        challenge, terminal = self._challenges.get(challenge_id)
+    async def complete(self, challenge_id: UUID, owner_id: object) -> AuthStep:
+        challenge, terminal = await self._challenges.claim(challenge_id, owner_id, "code_sent")
         if challenge is None:
-            return terminal or _step("failed", challenge_id, datetime.now(UTC))
-        if challenge.state != "code_sent":
-            return self._challenges.step(challenge_id, challenge, "failed")
+            return terminal or await self._challenges.failed()
         try:
             await cast(QrAuthorizationClient, challenge.client).complete_qr(challenge.qr_token)
         except Exception as error:
-            if _is_qr_expired(error):
-                return self._challenges.step(challenge_id, challenge, "expired")
-            return self._challenges.step(challenge_id, challenge, "failed")
-        return self._challenges.step(challenge_id, challenge, "authorized")
+            # A transient client failure may retry the same still-live challenge; QR expiry may not.
+            return await self._challenges.finish(
+                challenge_id, challenge, "expired" if _is_qr_expired(error) else "code_sent"
+            )
+        return await self._challenges.finish(challenge_id, challenge, "authorized")
 
     async def probe(self, material: SessionMaterial) -> SessionProbeResult:
-        return SessionProbeResult(
-            adapter=self.name,
-            state="needs_code",
-            telegram_user_id=None,
-            username=None,
-            phone_masked=None,
-            capabilities=frozenset(),
-            error_code=None,
-        )
+        return SessionProbeResult(adapter=self.name, state="needs_code", telegram_user_id=None, username=None, phone_masked=None, capabilities=frozenset(), error_code=None)
 
     async def convert(self, material: SessionMaterial) -> bytes:
         raise ValueError("interactive authorization cannot be imported")

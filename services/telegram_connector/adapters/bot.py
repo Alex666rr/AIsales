@@ -62,7 +62,7 @@ class BotAdapter:
             identity = await self._client.get_me(token)
         except Exception:
             return None
-        if not isinstance(identity, tuple) or len(identity) != 2 or not isinstance(identity[0], int):
+        if not isinstance(identity, tuple) or len(identity) != 2 or type(identity[0]) is not int or identity[0] <= 0:
             return None
         username = identity[1]
         if username is not None and (not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9_]{1,32}", username)):
