@@ -129,6 +129,8 @@ def _archive_member_payload(data: bytes, *, max_compressed_bytes: int, max_uncom
                     if collision_key in seen:
                         raise _rejected()
                     seen.add(collision_key)
+                    if member.flag_bits & 0x1 or member.compress_type not in _ZIP_COMPRESSION_METHODS:
+                        raise _rejected()
                     if member.is_dir():
                         entry_type = stat.S_IFMT(member.external_attr >> 16)
                         if entry_type not in (0, stat.S_IFDIR):
@@ -137,8 +139,6 @@ def _archive_member_payload(data: bytes, *, max_compressed_bytes: int, max_uncom
                     mode = member.external_attr >> 16
                     entry_type = stat.S_IFMT(mode)
                     if entry_type not in (0, stat.S_IFREG):
-                        raise _rejected()
-                    if member.flag_bits & 0x1 or member.compress_type not in _ZIP_COMPRESSION_METHODS:
                         raise _rejected()
                     total += member.file_size
                     if total > max_uncompressed_bytes:

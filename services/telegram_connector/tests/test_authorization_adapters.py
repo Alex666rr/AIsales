@@ -475,6 +475,15 @@ def _mutate_zip_field(data: bytes, signature: bytes, field_offset: int, value: i
     return bytes(result)
 
 
+def _mutate_first_zip_field(data: bytes, signature: bytes, field_offset: int, value: int) -> bytes:
+    """Mutate only the directory record, leaving the valid session record untouched."""
+    result = bytearray(data)
+    index = result.find(signature)
+    assert index >= 0
+    result[index + field_offset : index + field_offset + 2] = value.to_bytes(2, "little")
+    return bytes(result)
+
+
 @pytest.mark.parametrize("kind", ["encrypted", "unsupported-compression"])
 def test_tdata_rejects_zip_encryption_and_unknown_compression_without_detail_leaks(kind):
     """Deferring unsupported ZIP features to extraction would leak member errors or details."""
@@ -494,6 +503,27 @@ def test_tdata_rejects_zip_encryption_and_unknown_compression_without_detail_lea
 
     assert converter.calls == 0
     assert "session.bin" not in str(failure.value)
+
+
+@pytest.mark.parametrize("kind", ["encrypted", "unsupported-compression"])
+def test_tdata_rejects_directory_zip_features_before_accepting_a_valid_session(kind):
+    """Checking directory features after continue would bypass ZIP capability validation."""
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+        bundle.writestr("tdata/", b"")
+        bundle.writestr("tdata/session.bin", tdata_payload())
+    if kind == "encrypted":
+        payload = _mutate_first_zip_field(archive.getvalue(), b"PK\x03\x04", 6, 1)
+        payload = _mutate_first_zip_field(payload, b"PK\x01\x02", 8, 1)
+    else:
+        payload = _mutate_first_zip_field(archive.getvalue(), b"PK\x03\x04", 8, 99)
+        payload = _mutate_first_zip_field(payload, b"PK\x01\x02", 10, 99)
+    converter = FakeConverter()
+
+    with pytest.raises(ValueError, match="^unsupported session import$"):
+        run(TDataAdapter(converter).convert(SessionMaterial(adapter="tdata", payload=payload, credentials={})))
+
+    assert converter.calls == 0
 
 
 @pytest.mark.parametrize("entry_type", [stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK])
