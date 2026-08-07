@@ -1,0 +1,40 @@
+# Local work and brainstorming artifacts
+work/
+.superpowers/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.key
+*.pem
+
+# Telegram authorization data — never commit
+TData/
+tdata/
+sessions/
+*.session
+*.session-journal
+
+# Customer exports and backups
+exports/
+backups/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Node.js / frontend
+node_modules/
+dist/
+coverage/
+
+# Logs and operating-system files
+*.log
+.DS_Store
+Thumbs.db
+Desktop.ini
