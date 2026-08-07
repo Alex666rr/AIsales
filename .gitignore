@@ -1,6 +1,7 @@
 # Local work and brainstorming artifacts
 work/
 .superpowers/
+.worktrees/
 
 # Environment variables and secrets
 .env
