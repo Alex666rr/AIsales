@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
@@ -45,10 +45,21 @@ class ConnectionRecord(BaseModel):
     retry_at: datetime | None = None
     version: int = Field(default=0, ge=0)
     lease_owner_id: UUID | None = None
+    lease_expires_at: datetime | None = None
+    fence_token: int = Field(default=0, ge=0)
 
     @field_validator("retry_at")
     @classmethod
     def _utc_retry_timestamp(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @field_validator("lease_expires_at")
+    @classmethod
+    def _utc_lease_timestamp(cls, value: datetime | None) -> datetime | None:
         if value is None:
             return None
         if value.tzinfo is None or value.utcoffset() is None:
@@ -65,7 +76,7 @@ class ConnectionRepository(Protocol):
     async def save(self, record: ConnectionRecord) -> None:
         """Persist the next state before any retry is slept."""
 
-    async def try_claim(self, account_id: UUID, owner_id: UUID) -> ConnectionRecord | None:
+    async def try_claim(self, account_id: UUID, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
         """Atomically claim an unleased non-terminal record for one supervisor."""
 
     async def save_claimed(self, record: ConnectionRecord, owner_id: UUID, *, release_lease: bool) -> ConnectionRecord | None:
@@ -73,6 +84,9 @@ class ConnectionRepository(Protocol):
 
     async def force_terminal(self, account_id: UUID, state: Literal["paused", "archived"], now: datetime) -> ConnectionRecord:
         """Atomically make pause/archive win and invalidate every outstanding claim."""
+
+    async def renew_lease(self, record: ConnectionRecord, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
+        """Advance version while retaining the owner and fencing token for a live client."""
 
 
 class InMemoryConnectionRepository:
@@ -91,16 +105,16 @@ class InMemoryConnectionRepository:
             self._records[record.account_id] = record
             self.history.append(record)
 
-    async def try_claim(self, account_id: UUID, owner_id: UUID) -> ConnectionRecord | None:
+    async def try_claim(self, account_id: UUID, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
         async with self._lock:
             record = self._records.get(account_id)
             if record is None:
                 return None
             if record.health.state in {"paused", "reauth_required", "blocked", "archived"}:
                 return record
-            if record.lease_owner_id is not None:
+            if record.lease_owner_id is not None and (record.lease_expires_at is None or record.lease_expires_at > now):
                 return None
-            claimed = record.model_copy(update={"version": record.version + 1, "lease_owner_id": owner_id})
+            claimed = record.model_copy(update={"version": record.version + 1, "lease_owner_id": owner_id, "lease_expires_at": now + timedelta(seconds=lease_seconds), "fence_token": record.fence_token + 1})
             self._records[account_id] = claimed
             return claimed
 
@@ -112,10 +126,11 @@ class InMemoryConnectionRepository:
                 or current.version != record.version
                 or current.lease_owner_id != owner_id
                 or current.health.state == "archived"
+                or current.fence_token != record.fence_token
             ):
                 return None
             saved = record.model_copy(
-                update={"version": record.version + 1, "lease_owner_id": None if release_lease else owner_id}
+                update={"version": record.version + 1, "lease_owner_id": None if release_lease else owner_id, "lease_expires_at": None if release_lease else record.lease_expires_at}
             )
             self._records[record.account_id] = saved
             self.history.append(saved)
@@ -130,10 +145,23 @@ class InMemoryConnectionRepository:
                 return record
             health = record.health.model_copy(update={"state": state, "last_seen_at": now, "error_code": None})
             saved = record.model_copy(
-                update={"health": health, "retry_at": None, "version": record.version + 1, "lease_owner_id": None}
+                update={"health": health, "retry_at": None, "version": record.version + 1, "lease_owner_id": None, "lease_expires_at": None, "fence_token": record.fence_token + 1}
             )
             self._records[account_id] = saved
             self.history.append(saved)
+            return saved
+
+    async def renew_lease(self, record: ConnectionRecord, owner_id: UUID, now: datetime, *, lease_seconds: float) -> ConnectionRecord | None:
+        async with self._lock:
+            current = self._records.get(record.account_id)
+            if (
+                current is None or current.version != record.version or current.lease_owner_id != owner_id
+                or current.fence_token != record.fence_token or current.lease_expires_at is None
+                or current.lease_expires_at <= now or current.health.state != "active"
+            ):
+                return None
+            saved = record.model_copy(update={"version": record.version + 1, "lease_expires_at": now + timedelta(seconds=lease_seconds)})
+            self._records[record.account_id] = saved
             return saved
 
 

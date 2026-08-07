@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable
 from typing import Protocol
 from urllib.parse import quote, urlsplit
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError
 
@@ -134,6 +134,8 @@ class ProxyReservation(BaseModel):
     proxy: ProxyConfig
     newly_reserved: bool
     account_override: bool
+    assignment_id: UUID
+    assignment_revision: int
 
 
 class ProxyLease(BaseModel):
@@ -170,6 +172,9 @@ class ProxyAssignmentRepository(Protocol):
     async def release_failed_reservation(self, account_id: UUID, reservation: ProxyReservation) -> None:
         """Release only a newly created non-override lease after failed startup."""
 
+    async def release_terminal_assignment(self, account_id: UUID) -> None:
+        """Release an un-overridden shared assignment after stop/archive."""
+
 
 class InMemoryProxyAssignmentRepository:
     """A test-only stand-in for a transactional PostgreSQL assignment repository."""
@@ -180,12 +185,14 @@ class InMemoryProxyAssignmentRepository:
             raise ValueError("unknown default proxy")
         self._default_proxy_id = default_proxy_id
         self._overrides: dict[UUID, UUID] = {}
-        self._assignments: dict[UUID, UUID] = {}
+        self._assignments: dict[UUID, tuple[UUID, UUID, int]] = {}
+        self._revisions: dict[UUID, int] = {}
         self._lock = asyncio.Lock()
 
     async def set_account_override(self, account_id: UUID, proxy_id: UUID | None) -> None:
         """Persist an override; capacity is enforced on the next atomic reservation."""
         async with self._lock:
+            self._revisions[account_id] = self._revisions.get(account_id, 0) + 1
             if proxy_id is None:
                 self._overrides.pop(account_id, None)
             elif proxy_id in self._proxies:
@@ -201,28 +208,36 @@ class InMemoryProxyAssignmentRepository:
                 return None
             proxy = self._proxies[selected]
             current = self._assignments.get(account_id)
-            if current == selected:
-                return ProxyReservation(proxy=proxy, newly_reserved=False, account_override=override is not None)
-            assigned = sum(1 for proxy_id in self._assignments.values() if proxy_id == selected)
+            revision = self._revisions.get(account_id, 0)
+            if current is not None and current[0] == selected:
+                return ProxyReservation(proxy=proxy, newly_reserved=False, account_override=override is not None, assignment_id=current[1], assignment_revision=current[2])
+            assigned = sum(1 for proxy_id, _, _ in self._assignments.values() if proxy_id == selected)
             if assigned >= proxy.capacity:
                 return None
             if current is not None:
                 self._assignments.pop(account_id, None)
-            self._assignments[account_id] = selected
-            return ProxyReservation(proxy=proxy, newly_reserved=True, account_override=override is not None)
+            assignment_id = uuid4()
+            self._assignments[account_id] = (selected, assignment_id, revision)
+            return ProxyReservation(proxy=proxy, newly_reserved=True, account_override=override is not None, assignment_id=assignment_id, assignment_revision=revision)
 
     async def release_failed_reservation(self, account_id: UUID, reservation: ProxyReservation) -> None:
         async with self._lock:
             if (
                 reservation.newly_reserved
                 and not reservation.account_override
-                and self._assignments.get(account_id) == reservation.proxy.proxy_id
+                and self._assignments.get(account_id) == (reservation.proxy.proxy_id, reservation.assignment_id, reservation.assignment_revision)
+                and self._revisions.get(account_id, 0) == reservation.assignment_revision
             ):
+                self._assignments.pop(account_id, None)
+
+    async def release_terminal_assignment(self, account_id: UUID) -> None:
+        async with self._lock:
+            if account_id not in self._overrides:
                 self._assignments.pop(account_id, None)
 
     async def assignments_for(self, proxy_id: UUID) -> tuple[UUID, ...]:
         async with self._lock:
-            return tuple(account_id for account_id, assigned in self._assignments.items() if assigned == proxy_id)
+            return tuple(account_id for account_id, (assigned, _, _) in self._assignments.items() if assigned == proxy_id)
 
 
 class ProxyAssignmentService:
@@ -246,3 +261,6 @@ class ProxyAssignmentService:
     async def release_failed(self, account_id: UUID, lease: ProxyLease) -> None:
         """Apply the repository's atomic failed-start cleanup policy."""
         await self._repository.release_failed_reservation(account_id, lease.reservation)
+
+    async def release_terminal(self, account_id: UUID) -> None:
+        await self._repository.release_terminal_assignment(account_id)

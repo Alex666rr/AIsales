@@ -149,6 +149,45 @@ def test_probe_exception_becomes_safe_unavailable_health_without_secret_leak():
     asyncio.run(scenario())
 
 
+def test_failed_probe_cleanup_cas_preserves_override_added_during_probe():
+    """A cleanup keyed only by proxy ID can erase an override written while the probe is in flight."""
+    class DelayedUnavailableChecker:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def check(self, proxy: ProxyConfig) -> ProxyHealth:
+            self.started.set()
+            await self.release.wait()
+            return ProxyHealth(available=False, ip_address=None, latency_ms=None)
+
+    async def scenario():
+        repository = InMemoryProxyAssignmentRepository(
+            proxies=(
+                ProxyConfig(proxy_id=UUID(int=1), url="http://one.example:8080", capacity=1),
+                ProxyConfig(proxy_id=UUID(int=2), url="http://two.example:8080", capacity=1),
+            ),
+            default_proxy_id=UUID(int=1),
+        )
+        checker = DelayedUnavailableChecker()
+        service = ProxyAssignmentService(repository, checker)
+        acquiring = asyncio.create_task(service.acquire(UUID(int=10)))
+        await checker.started.wait()
+        await repository.set_account_override(UUID(int=10), UUID(int=2))
+        checker.release.set()
+        lease = await acquiring
+        assert lease is not None
+
+        await service.release_failed(UUID(int=10), lease)
+        replacement = await repository.reserve_assignment(UUID(int=10))
+
+        assert replacement is not None
+        assert replacement.proxy.proxy_id == UUID(int=2)
+        assert replacement.account_override is True
+
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize(
     ("url", "kwargs"),
     [

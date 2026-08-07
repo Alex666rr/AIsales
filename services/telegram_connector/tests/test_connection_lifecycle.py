@@ -37,6 +37,11 @@ class AdvancingSleeper:
         self.clock.value += timedelta(seconds=seconds)
 
 
+class PassiveMonitorSleeper:
+    async def sleep(self, seconds: float) -> None:
+        await asyncio.Event().wait()
+
+
 class AvailableProxyChecker:
     async def check(self, proxy: ProxyConfig) -> ProxyHealth:
         return ProxyHealth(available=True, ip_address="203.0.113.40", latency_ms=7)
@@ -94,7 +99,7 @@ def make_repository(state: str = "quarantine") -> tuple[InMemoryConnectionReposi
     )
 
 
-def make_supervisor(repository, factory, clock, sleeper, *, proxy_repository=None, proxy_checker=None, max_retries=2) -> ConnectionSupervisor:
+def make_supervisor(repository, factory, clock, sleeper, *, proxy_repository=None, proxy_checker=None, max_retries=2, monitor_sleeper=None, lease_duration_seconds=60) -> ConnectionSupervisor:
     proxy_repository = proxy_repository or InMemoryProxyAssignmentRepository(
         proxies=(ProxyConfig(proxy_id=UUID(int=1), url="socks5://edge.example:1080", capacity=5),),
         default_proxy_id=UUID(int=1),
@@ -108,6 +113,8 @@ def make_supervisor(repository, factory, clock, sleeper, *, proxy_repository=Non
         sleeper=sleeper,
         max_retries=max_retries,
         max_backoff_seconds=10,
+        monitor_sleeper=monitor_sleeper or PassiveMonitorSleeper(),
+        lease_duration_seconds=lease_duration_seconds,
     )
 
 
@@ -122,6 +129,7 @@ def test_start_persists_active_health_and_restart_reconnects_from_persisted_stat
         assert (await first.start(UUID(int=10))).state == "active"
         assert (await repository.get(UUID(int=10))).health.state == "active"
 
+        clock.value += timedelta(seconds=61)
         restarted_factory = ScriptedFactory([None])
         restarted = make_supervisor(repository, restarted_factory, clock, AdvancingSleeper(clock))
         assert (await restarted.start(UUID(int=10))).state == "active"
@@ -244,6 +252,96 @@ def test_delayed_cancellation_resistant_active_save_cannot_overwrite_pause():
         assert (await starting).state == "paused"
         assert (await supervisor.health(UUID(int=10))).state == "paused"
         assert factory.clients[0].disconnected is True
+
+    asyncio.run(scenario())
+
+
+def test_live_lease_blocks_second_supervisor_and_remote_pause_closes_owner_client():
+    """Releasing a lease at active permits duplicate live clients and hides remote pause from the owner."""
+    class GateSleeper:
+        def __init__(self) -> None:
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def sleep(self, seconds: float) -> None:
+            self.entered.set()
+            await self.release.wait()
+
+    async def scenario():
+        repository, _ = make_repository()
+        clock = ManualClock()
+        proxy_repository = InMemoryProxyAssignmentRepository(
+            proxies=(ProxyConfig(proxy_id=UUID(int=1), url="socks5://edge.example:1080", capacity=2),),
+            default_proxy_id=UUID(int=1),
+        )
+        monitor_sleeper = GateSleeper()
+        first_factory = ScriptedFactory([None])
+        first = make_supervisor(
+            repository, first_factory, clock, AdvancingSleeper(clock), proxy_repository=proxy_repository,
+            monitor_sleeper=monitor_sleeper, lease_duration_seconds=30,
+        )
+        assert (await first.start(UUID(int=10))).state == "active"
+        await asyncio.sleep(0)
+        assert monitor_sleeper.entered.is_set()
+
+        second_factory = ScriptedFactory([None])
+        second = make_supervisor(
+            repository, second_factory, clock, AdvancingSleeper(clock), proxy_repository=proxy_repository,
+            monitor_sleeper=GateSleeper(), lease_duration_seconds=30,
+        )
+        assert (await second.start(UUID(int=10))).state == "active"
+        assert second_factory.clients == []
+
+        assert (await second.pause(UUID(int=10))).state == "paused"
+        monitor_sleeper.release.set()
+        await asyncio.sleep(0)
+        assert first_factory.clients[0].disconnected is True
+
+    asyncio.run(scenario())
+
+
+def test_expired_fenced_lease_can_be_reclaimed_and_rejects_old_owner_save():
+    """Without expiry and a fencing epoch, a crashed worker can either block recovery or write after takeover."""
+    async def scenario():
+        repository, _ = make_repository()
+        clock = ManualClock()
+        owner_one = UUID(int=101)
+        owner_two = UUID(int=102)
+        first = await repository.try_claim(UUID(int=10), owner_one, clock.now(), lease_seconds=5)
+        assert first is not None
+        clock.value += timedelta(seconds=6)
+        second = await repository.try_claim(UUID(int=10), owner_two, clock.now(), lease_seconds=5)
+        assert second is not None
+        assert second.fence_token > first.fence_token
+
+        old_active = first.model_copy(update={"health": first.health.model_copy(update={"state": "active"})})
+        assert await repository.save_claimed(old_active, owner_one, release_lease=False) is None
+
+    asyncio.run(scenario())
+
+
+def test_stop_releases_default_capacity_but_preserves_override_assignment():
+    """Terminal state without assignment release starves another account; releasing override discards intent."""
+    async def scenario():
+        clock = ManualClock()
+        proxy_repository = InMemoryProxyAssignmentRepository(
+            proxies=(ProxyConfig(proxy_id=UUID(int=1), url="socks5://edge.example:1080", capacity=1),),
+            default_proxy_id=UUID(int=1),
+        )
+        first_repository, _ = make_repository()
+        first = make_supervisor(
+            first_repository, ScriptedFactory([None]), clock, AdvancingSleeper(clock), proxy_repository=proxy_repository
+        )
+        await first.start(UUID(int=10))
+        await first.stop(UUID(int=10))
+
+        assert await proxy_repository.reserve_assignment(UUID(int=20)) is not None
+        await proxy_repository.release_terminal_assignment(UUID(int=20))
+
+        await proxy_repository.set_account_override(UUID(int=10), UUID(int=1))
+        assert await proxy_repository.reserve_assignment(UUID(int=10)) is not None
+        await proxy_repository.release_terminal_assignment(UUID(int=10))
+        assert await proxy_repository.assignments_for(UUID(int=1)) == (UUID(int=10),)
 
     asyncio.run(scenario())
 

@@ -42,8 +42,11 @@ class ConnectionSupervisor:
         max_retries: int = 5,
         max_backoff_seconds: float = 60.0,
         max_retry_after_seconds: int = 86_400,
+        lease_duration_seconds: float = 60.0,
+        heartbeat_interval_seconds: float = 15.0,
+        monitor_sleeper: Sleeper | None = None,
     ) -> None:
-        if max_retries < 1 or max_backoff_seconds <= 0 or max_retry_after_seconds < 1:
+        if max_retries < 1 or max_backoff_seconds <= 0 or max_retry_after_seconds < 1 or lease_duration_seconds <= 0 or heartbeat_interval_seconds <= 0:
             raise ValueError("invalid reconnect bounds")
         self._repository = repository
         self._proxies = ProxyAssignmentService(proxy_repository, proxy_checker)
@@ -53,9 +56,13 @@ class ConnectionSupervisor:
         self._max_retries = max_retries
         self._max_backoff_seconds = max_backoff_seconds
         self._max_retry_after_seconds = max_retry_after_seconds
+        self._lease_duration_seconds = lease_duration_seconds
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._monitor_sleeper = monitor_sleeper or sleeper
         self._tasks: dict[UUID, asyncio.Task[ConnectionHealth]] = {}
         self._clients: dict[UUID, TelegramClient] = {}
         self._locks: dict[UUID, asyncio.Lock] = {}
+        self._monitor_tasks: dict[UUID, asyncio.Task[None]] = {}
         self._owner_id = uuid4()
 
     async def start(self, account_id: UUID) -> ConnectionHealth:
@@ -68,7 +75,7 @@ class ConnectionSupervisor:
             elif account_id in self._clients:
                 return await self.health(account_id)
             else:
-                claimed = await self._repository.try_claim(account_id, self._owner_id)
+                claimed = await self._repository.try_claim(account_id, self._owner_id, self._clock.now(), lease_seconds=self._lease_duration_seconds)
                 if claimed is None:
                     return await self.health(account_id)
                 if claimed.health.state in _TERMINAL_STATES:
@@ -107,6 +114,10 @@ class ConnectionSupervisor:
             client = self._clients.pop(account_id, None)
         if client is not None:
             await self._safe_disconnect(client)
+        monitor = self._monitor_tasks.pop(account_id, None)
+        if monitor is not None:
+            monitor.cancel()
+        await self._proxies.release_terminal(account_id)
         return record.health
 
     async def _run(self, account_id: UUID, record: ConnectionRecord) -> ConnectionHealth:
@@ -160,11 +171,12 @@ class ConnectionSupervisor:
                         latency_ms=lease.health.latency_ms,
                         retry_count=0,
                         retry_at=None,
-                        release_lease=True,
+                        release_lease=False,
                     )
                     if saved is None:
                         await self._drop_client(account_id, client)
                         return await self.health(account_id)
+                    self._monitor_tasks[account_id] = asyncio.create_task(self._monitor(account_id, saved, client))
                     return saved.health
                 except AuthorizationLostError:
                     await self._cleanup_failed_reservation(account_id, lease)
@@ -292,11 +304,26 @@ class ConnectionSupervisor:
 
     async def _owns_claim(self, record: ConnectionRecord) -> bool:
         current = await self._repository.get(record.account_id)
-        return current is not None and current.version == record.version and current.lease_owner_id == self._owner_id
+        return current is not None and current.version == record.version and current.lease_owner_id == self._owner_id and current.fence_token == record.fence_token
 
     async def _cleanup_failed_reservation(self, account_id: UUID, lease: ProxyLease | None) -> None:
         if lease is not None:
             await self._proxies.release_failed(account_id, lease)
+
+    async def _monitor(self, account_id: UUID, record: ConnectionRecord, client: TelegramClient) -> None:
+        try:
+            while True:
+                await self._monitor_sleeper.sleep(self._heartbeat_interval_seconds)
+                renewed = await self._repository.renew_lease(record, self._owner_id, self._clock.now(), lease_seconds=self._lease_duration_seconds)
+                if renewed is None:
+                    await self._drop_client(account_id, client)
+                    return
+                record = renewed
+        except asyncio.CancelledError:
+            return
+        finally:
+            if self._monitor_tasks.get(account_id) is asyncio.current_task():
+                self._monitor_tasks.pop(account_id, None)
 
     @staticmethod
     async def _safe_disconnect(client: TelegramClient) -> None:
