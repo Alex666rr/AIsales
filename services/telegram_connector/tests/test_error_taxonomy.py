@@ -4,20 +4,14 @@ import asyncio
 
 import pytest
 
-from telegram_connector import TelegramGatewayError, map_telegram_error
+from telegram_connector import (
+    InvalidPeerAdapterError,
+    PaidMessageRequiredAdapterError,
+    PrivacyRestrictedAdapterError,
+    TelegramGatewayError,
+    map_telegram_error,
+)
 from telegram_connector.runtime.connection import AccountBlockedError, AuthorizationLostError, FloodWaitError
-
-
-class PeerIdInvalidError(Exception):
-    pass
-
-
-class UserPrivacyRestrictedError(Exception):
-    pass
-
-
-class AllowPaidMessagesError(Exception):
-    pass
 
 
 class UnknownTelegramFailure(Exception):
@@ -27,9 +21,9 @@ class UnknownTelegramFailure(Exception):
 @pytest.mark.parametrize(
     "source,expected",
     [
-        (PeerIdInvalidError("phone +15551234567"), "invalid_peer"),
-        (UserPrivacyRestrictedError("raw privacy detail"), "privacy_restricted"),
-        (AllowPaidMessagesError("payment token"), "paid_message_required"),
+        (InvalidPeerAdapterError("phone +15551234567"), "invalid_peer"),
+        (PrivacyRestrictedAdapterError("raw privacy detail"), "privacy_restricted"),
+        (PaidMessageRequiredAdapterError("payment token"), "paid_message_required"),
         (FloodWaitError(3), "rate_limited"),
         (AuthorizationLostError(), "authorization_lost"),
         (AccountBlockedError(), "account_blocked"),
@@ -54,3 +48,9 @@ def test_error_taxonomy_is_not_derived_from_exception_message_text():
 
     raw = ArbitraryError("FloodWaitError privacy payment phone +15551234567")
     assert map_telegram_error(raw) == "telegram_unknown"
+
+
+def test_same_name_unrelated_adapter_exception_is_unknown():
+    """Class-name matching could let an unrelated dependency select a Telegram error code."""
+    PeerIdInvalidError = type("PeerIdInvalidError", (Exception,), {})
+    assert map_telegram_error(PeerIdInvalidError("raw detail")) == "telegram_unknown"

@@ -9,10 +9,12 @@ import pytest
 from telegram_connector import (
     CompatibilityRegistry,
     InMemoryMessageDeliveryRepository,
-    IncomingTelegramEvent,
     MessageCommand,
     TelegramGateway,
     TelegramGatewayError,
+    TrustedIncomingUpdate,
+    TrustedTelegramEntity,
+    TrustedTelegramEntityKind,
 )
 
 
@@ -42,11 +44,11 @@ class SyntheticClient:
 
 
 def command(*, idempotency_key: str = "fixed-key") -> MessageCommand:
-    return MessageCommand(
+    return MessageCommand.create(
         account_id=UUID(int=10),
         peer_id=42,
         idempotency_key=idempotency_key,
-        message_text="synthetic-only-message",
+        synthetic_body="synthetic-only-message",
     )
 
 
@@ -169,13 +171,11 @@ def test_incoming_normalizes_private_user_metadata_without_exposing_raw_text():
     """Including Telegram text in a normalized update would expose content to later paths."""
     service = gateway()
     update = service.normalize_incoming(
-        IncomingTelegramEvent(
+        TrustedIncomingUpdate(
             update_id=9,
-            peer_kind="private",
-            sender_kind="user",
-            sender_id=42,
-            peer_id=42,
-            message_text="synthetic-only-message",
+            peer=TrustedTelegramEntity(entity_id=42, kind=TrustedTelegramEntityKind.USER),
+            sender=TrustedTelegramEntity(entity_id=42, kind=TrustedTelegramEntityKind.USER),
+            is_service=False,
             received_at=datetime(2026, 8, 7, tzinfo=UTC),
         )
     )
@@ -187,27 +187,24 @@ def test_incoming_normalizes_private_user_metadata_without_exposing_raw_text():
 
 
 @pytest.mark.parametrize(
-    "peer_kind,sender_kind,sender_id,peer_id",
+    "peer_kind,sender_kind,is_service",
     [
-        ("group", "user", 42, 10),
-        ("supergroup", "user", 42, 10),
-        ("channel", "user", 42, 10),
-        ("private", "service", 42, 42),
-        ("private", "bot", 42, 42),
-        ("unknown", "user", 42, 42),
-        ("private", "user", None, 42),
-        ("private", "user", 42, None),
+        (TrustedTelegramEntityKind.GROUP, TrustedTelegramEntityKind.USER, False),
+        (TrustedTelegramEntityKind.SUPERGROUP, TrustedTelegramEntityKind.USER, False),
+        (TrustedTelegramEntityKind.CHANNEL, TrustedTelegramEntityKind.USER, False),
+        (TrustedTelegramEntityKind.USER, TrustedTelegramEntityKind.SERVICE, False),
+        (TrustedTelegramEntityKind.USER, TrustedTelegramEntityKind.BOT, False),
+        (TrustedTelegramEntityKind.UNKNOWN, TrustedTelegramEntityKind.USER, False),
+        (TrustedTelegramEntityKind.USER, TrustedTelegramEntityKind.USER, True),
     ],
 )
-def test_incoming_defaults_to_deny_for_non_private_or_malformed_events(peer_kind, sender_kind, sender_id, peer_id):
+def test_incoming_defaults_to_deny_for_non_private_or_malformed_events(peer_kind, sender_kind, is_service):
     """Loosening the classifier would allow group, service, bot, or malformed traffic through."""
-    event = IncomingTelegramEvent(
+    event = TrustedIncomingUpdate(
         update_id=9,
-        peer_kind=peer_kind,
-        sender_kind=sender_kind,
-        sender_id=sender_id,
-        peer_id=peer_id,
-        message_text="synthetic-only-message",
+        peer=TrustedTelegramEntity(entity_id=42, kind=peer_kind),
+        sender=TrustedTelegramEntity(entity_id=42, kind=sender_kind),
+        is_service=is_service,
         received_at=datetime(2026, 8, 7, tzinfo=UTC),
     )
     assert gateway().normalize_incoming(event) is None

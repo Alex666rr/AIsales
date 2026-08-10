@@ -41,7 +41,11 @@ def test_owned_accounts_roundtrip_restart_reply_and_archive_sender_session():
             assert await harness.receive_at_sender(reply) is True
 
             rows = await harness.compatibility_rows()
+            expected = await harness.expected_compatibility_combination()
             combinations = {(row.adapter, row.adapter_version, row.proxy_id) for row in rows}
+            assert rows
+            assert expected in combinations
+            assert sum(1 for row in rows if (row.adapter, row.adapter_version, row.proxy_id) == expected) == 1
             assert len(rows) == len(combinations)
         finally:
             await harness.archive_sender_session()

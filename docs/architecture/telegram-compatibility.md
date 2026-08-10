@@ -57,3 +57,24 @@ adapter/version/proxy UUID combination.
 
 Never place the factory, credentials, sessions, raw messages, or account
 identifiers in version control or test output.
+
+## Durable implementation
+
+`SqlAlchemyMessageDeliveryRepository` is the production PostgreSQL source of
+truth. Its migration creates a composite idempotency primary key plus owner,
+lease-expiry, and fence-token fields. `reserve` locks a durable row; an expired
+pending lease becomes `uncertain` and must reconcile before one atomic resend
+reservation. Duplicate callers use bounded database polling, never an
+in-process event. Cancellation shields the transition to durable uncertainty
+before it escapes the gateway.
+
+`SqlAlchemyCompatibilityRegistry` upserts a composite adapter/version/proxy
+primary key. Direct operation uses a non-null empty proxy key so PostgreSQL
+cannot create multiple NULL-key rows. The in-memory repository and registry are
+explicit test fakes only.
+
+Trusted inbound adapter code emits `TrustedIncomingUpdate` and authenticated
+entity enums. The gateway refuses arbitrary public labels such as `peer_kind`
+and accepts only non-service user-to-user envelopes. Outbound body validation
+uses `MessageCommand.create`; the synthetic body is a private attribute, so
+Pydantic errors, repr, and serialization cannot expose rejected raw text.

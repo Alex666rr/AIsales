@@ -27,20 +27,22 @@ class TelegramGatewayError(RuntimeError):
         super().__init__(f"telegram gateway error: {code}")
 
 
-_CLASS_CODES: dict[str, TelegramErrorCode] = {
-    "PeerIdInvalidError": "invalid_peer",
-    "PeerIdInvalid": "invalid_peer",
-    "UsernameInvalidError": "invalid_peer",
-    "UsernameNotOccupiedError": "invalid_peer",
-    "UserPrivacyRestrictedError": "privacy_restricted",
-    "ChatWriteForbiddenError": "privacy_restricted",
-    "AllowPaidMessagesError": "paid_message_required",
-    "FloodWaitError": "rate_limited",
-    "AuthKeyUnregisteredError": "authorization_lost",
-    "SessionRevokedError": "authorization_lost",
-    "UserDeactivatedError": "account_blocked",
-    "UserDeactivatedBanError": "account_blocked",
-}
+class TelegramAdapterError(Exception):
+    """Explicit adapter translation signal; never use a third-party class name as policy."""
+
+    code: TelegramErrorCode
+
+
+class InvalidPeerAdapterError(TelegramAdapterError):
+    code = "invalid_peer"
+
+
+class PrivacyRestrictedAdapterError(TelegramAdapterError):
+    code = "privacy_restricted"
+
+
+class PaidMessageRequiredAdapterError(TelegramAdapterError):
+    code = "paid_message_required"
 
 
 def map_telegram_error(error: BaseException) -> TelegramErrorCode:
@@ -51,6 +53,8 @@ def map_telegram_error(error: BaseException) -> TelegramErrorCode:
         return "authorization_lost"
     if isinstance(error, AccountBlockedError):
         return "account_blocked"
+    if isinstance(error, TelegramAdapterError):
+        return error.code
     if isinstance(error, (TimeoutError, asyncio.TimeoutError)):
         return "timeout"
-    return _CLASS_CODES.get(error.__class__.__name__, "telegram_unknown")
+    return "telegram_unknown"

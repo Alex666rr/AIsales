@@ -15,15 +15,28 @@ from .adapters import (
 )
 from .config import ConnectorSettings
 from .compatibility import CompatibilityRecord, CompatibilityRegistry
-from .error_codes import TelegramGatewayError, map_telegram_error
+from .error_codes import (
+    InvalidPeerAdapterError,
+    PaidMessageRequiredAdapterError,
+    PrivacyRestrictedAdapterError,
+    TelegramGatewayError,
+    map_telegram_error,
+)
 from .gateway import (
     DeliveryRecord,
     DeliveryResult,
     InMemoryMessageDeliveryRepository,
-    IncomingTelegramEvent,
     MessageCommand,
     TelegramGateway,
     TelegramUpdate,
+    TrustedIncomingUpdate,
+    TrustedTelegramEntity,
+    TrustedTelegramEntityKind,
+)
+from .persistence import (
+    SqlAlchemyCompatibilityRegistry,
+    SqlAlchemyMessageDeliveryRepository,
+    create_gateway_schema,
 )
 from .quarantine import QuarantinedUpload, SessionQuarantineProcessor, UnsafeQuarantinedUpload
 from .session_store import (
@@ -47,8 +60,9 @@ __all__ = [
     "BotAdapter",
     "EncryptedSessionStore",
     "InMemoryMessageDeliveryRepository",
-    "IncomingTelegramEvent",
+    "InvalidPeerAdapterError",
     "MessageCommand",
+    "PaidMessageRequiredAdapterError",
     "QuarantinedUpload",
     "PhoneAdapter",
     "QRAdapter",
@@ -67,8 +81,15 @@ __all__ = [
     "ConnectionSupervisor",
     "ProxyConfig",
     "ProxyHealth",
+    "PrivacyRestrictedAdapterError",
+    "SqlAlchemyCompatibilityRegistry",
+    "SqlAlchemyMessageDeliveryRepository",
     "TelegramGateway",
     "TelegramGatewayError",
     "TelegramUpdate",
+    "TrustedIncomingUpdate",
+    "TrustedTelegramEntity",
+    "TrustedTelegramEntityKind",
+    "create_gateway_schema",
     "map_telegram_error",
 ]
