@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from enum import Enum
 from typing import Callable, Literal, Protocol
 from uuid import UUID, uuid4
 
@@ -35,6 +34,15 @@ class MessageCommand(BaseModel):
         """Return the body only at the injected network boundary; it is never serializable state."""
         return self._synthetic_body
 
+    def __reduce_ex__(self, protocol: int):
+        raise TypeError("message command serialization is disabled")
+
+    def __getstate__(self):
+        raise TypeError("message command serialization is disabled")
+
+    def model_copy(self, *, update=None, deep: bool = False):
+        raise TypeError("message command copying is disabled")
+
 
 class DeliveryResult(BaseModel):
     """Content-free result suitable for durable idempotency persistence."""
@@ -45,44 +53,22 @@ class DeliveryResult(BaseModel):
     outcome: Literal["sent", "reconciled"]
 
 
-class TrustedTelegramEntityKind(str, Enum):
-    """Adapter-normalized authenticated entity identity; public labels are not accepted by the gateway."""
+class _InboundCapability:
+    """Opaque instance-bound adapter proof; raw text and public labels never enter it."""
+    __slots__ = ("_issuer", "update_id", "sender_id", "peer_id", "received_at")
 
-    USER = "user"
-    BOT = "bot"
-    GROUP = "group"
-    SUPERGROUP = "supergroup"
-    CHANNEL = "channel"
-    SERVICE = "service"
-    UNKNOWN = "unknown"
+    def __init__(self, issuer: object, update_id: int, sender_id: int, peer_id: int, received_at: datetime) -> None:
+        self._issuer, self.update_id, self.sender_id, self.peer_id, self.received_at = issuer, update_id, sender_id, peer_id, received_at
 
 
-class TrustedTelegramEntity(BaseModel):
-    """Identity/type constructed at the authenticated adapter boundary."""
+class _InboundDecoder:
+    def __init__(self, issuer: object) -> None:
+        self._issuer = issuer
 
-    model_config = ConfigDict(frozen=True)
-
-    entity_id: int = Field(gt=0)
-    kind: TrustedTelegramEntityKind
-
-
-class TrustedIncomingUpdate(BaseModel):
-    """Content-free authenticated adapter envelope; it has no peer_kind/sender_kind string fields."""
-
-    model_config = ConfigDict(frozen=True)
-
-    update_id: int = Field(ge=0)
-    peer: TrustedTelegramEntity
-    sender: TrustedTelegramEntity
-    is_service: bool
-    received_at: datetime
-
-    @field_validator("received_at")
-    @classmethod
-    def _utc_timestamp(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("timestamp must be timezone-aware")
-        return value.astimezone(UTC)
+    def private_user(self, *, update_id: int, sender_id: int, peer_id: int, received_at: datetime) -> object:
+        if update_id < 0 or sender_id <= 0 or peer_id <= 0 or received_at.tzinfo is None:
+            raise ValueError("invalid authenticated inbound identity")
+        return _InboundCapability(self._issuer, update_id, sender_id, peer_id, received_at.astimezone(UTC))
 
 
 class TelegramUpdate(BaseModel):
@@ -157,6 +143,9 @@ class MessageDeliveryRepository(Protocol):
 
     async def mark_uncertain(self, command: MessageCommand, reservation: DeliveryReservation, error_code: TelegramErrorCode) -> bool:
         """Persist ambiguity before a caller attempts remote reconciliation."""
+
+    async def renew(self, command: MessageCommand, reservation: DeliveryReservation) -> bool:
+        """Extend this exact outbound owner/fence lease while a remote call remains live."""
 
     async def allow_resend_after_reconcile_miss(self, command: MessageCommand, reservation: DeliveryReservation) -> DeliveryReservation:
         """Atomically make one reconciled-miss caller the next sender."""
@@ -241,6 +230,15 @@ class InMemoryMessageDeliveryRepository:
             self._events[key].set()
             return True
 
+    async def renew(self, command: MessageCommand, reservation: DeliveryReservation) -> bool:
+        key = self._key(command)
+        async with self._lock:
+            current = self._records.get(key)
+            if current is None or current.state != "pending" or current.owner_id != self._owner_id or current.fence_token != reservation.fence_token:
+                return False
+            self._records[key] = current.model_copy(update={"lease_expires_at": self._now() + timedelta(seconds=self._lease_seconds)})
+            return True
+
     async def allow_resend_after_reconcile_miss(self, command: MessageCommand, reservation: DeliveryReservation) -> DeliveryReservation:
         key = self._key(command)
         async with self._lock:
@@ -282,7 +280,11 @@ class TelegramGateway:
         adapter_version: str,
         proxy_id: UUID | None,
         connection_is_active: Callable[[], bool],
+        outbound_deadline_seconds: float = 20.0,
+        lease_renew_seconds: float = 5.0,
     ) -> None:
+        if outbound_deadline_seconds <= 0 or lease_renew_seconds <= 0 or outbound_deadline_seconds <= lease_renew_seconds:
+            raise ValueError("invalid outbound lease timing")
         self._client = client
         self._repository = repository
         self._compatibility = compatibility
@@ -290,6 +292,13 @@ class TelegramGateway:
         self._adapter_version = adapter_version
         self._proxy_id = proxy_id
         self._connection_is_active = connection_is_active
+        self._outbound_deadline_seconds = outbound_deadline_seconds
+        self._lease_renew_seconds = lease_renew_seconds
+        self._inbound_issuer = object()
+        self._decoder = _InboundDecoder(self._inbound_issuer)
+
+    def inbound_decoder(self) -> object:
+        return self._decoder
 
     async def send(self, command: MessageCommand) -> DeliveryResult:
         """Return one durable result; ambiguous sends always reconcile before a later resend."""
@@ -309,6 +318,9 @@ class TelegramGateway:
                 reconciled = await self._reconcile(command, reservation)
                 if reconciled is not None:
                     return reconciled
+                if not getattr(self._client, "remote_idempotency_guaranteed", False):
+                    self._record("telegram_unknown")
+                    raise TelegramGatewayError("telegram_unknown")
                 reservation = await self._repository.allow_resend_after_reconcile_miss(command, reservation)
                 if reservation.action == "completed" and reservation.result is not None:
                     return reservation.result
@@ -319,24 +331,18 @@ class TelegramGateway:
 
     def normalize_incoming(self, event: object) -> TelegramUpdate | None:
         """Default-deny everything except an authenticated private non-service user envelope."""
-        if not isinstance(event, TrustedIncomingUpdate):
-            return None
-        if (
-            event.peer.kind is not TrustedTelegramEntityKind.USER
-            or event.sender.kind is not TrustedTelegramEntityKind.USER
-            or event.is_service
-        ):
+        if not isinstance(event, _InboundCapability) or event._issuer is not self._inbound_issuer:
             return None
         return TelegramUpdate(
             update_id=event.update_id,
-            sender_id=event.sender.entity_id,
-            peer_id=event.peer.entity_id,
+            sender_id=event.sender_id,
+            peer_id=event.peer_id,
             received_at=event.received_at,
         )
 
     async def _send_reserved(self, command: MessageCommand, reservation: DeliveryReservation) -> DeliveryResult:
         try:
-            external_message_id = await self._client.send_message(command.peer_id, command.body_for_injected_client(), command.idempotency_key)
+            external_message_id = await self._send_with_renewal(command, reservation)
         except asyncio.CancelledError:
             # Cancellation can arrive after the adapter started its network
             # effect. Persist ambiguity under shield before allowing teardown.
@@ -364,6 +370,23 @@ class TelegramGateway:
         self._record("sent")
         return result
 
+    async def _send_with_renewal(self, command: MessageCommand, reservation: DeliveryReservation) -> str:
+        task = asyncio.create_task(self._client.send_message(command.peer_id, command.body_for_injected_client(), command.idempotency_key))
+        deadline = asyncio.get_running_loop().time() + self._outbound_deadline_seconds
+        while True:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                await self._persist_uncertain(command, reservation, "timeout")
+                task.add_done_callback(_consume_task_exception)
+                raise TelegramGatewayError("timeout")
+            done, _ = await asyncio.wait({task}, timeout=min(remaining, self._lease_renew_seconds))
+            if done:
+                return task.result()
+            if not await self._repository.renew(command, reservation):
+                await self._persist_uncertain(command, reservation, "timeout")
+                task.add_done_callback(_consume_task_exception)
+                raise TelegramGatewayError("timeout")
+
     async def _reconcile(self, command: MessageCommand, reservation: DeliveryReservation) -> DeliveryResult | None:
         try:
             external_message_id = await self._client.reconcile_message(command.peer_id, command.idempotency_key)
@@ -376,7 +399,9 @@ class TelegramGateway:
         result = DeliveryResult(external_message_id=str(external_message_id), outcome="reconciled")
         # Reconciliation completes regardless of the prior pending owner; a
         # remote hit is definitive and must fence every later resend.
-        await self._repository.complete(command, reservation, result)
+        if not await self._repository.complete(command, reservation, result):
+            self._record("telegram_unknown")
+            raise TelegramGatewayError("telegram_unknown")
         self._record("reconciled")
         return result
 
@@ -395,3 +420,11 @@ class TelegramGateway:
             proxy=self._proxy_id,
             outcome=outcome,
         )
+
+
+def _consume_task_exception(task: asyncio.Task[object]) -> None:
+    if not task.cancelled():
+        try:
+            task.exception()
+        except Exception:
+            pass

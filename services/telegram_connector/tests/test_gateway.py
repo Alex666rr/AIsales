@@ -12,14 +12,13 @@ from telegram_connector import (
     MessageCommand,
     TelegramGateway,
     TelegramGatewayError,
-    TrustedIncomingUpdate,
-    TrustedTelegramEntity,
-    TrustedTelegramEntityKind,
 )
 
 
 class SyntheticClient:
     """Injected client fake; it never contacts Telegram."""
+
+    remote_idempotency_guaranteed = True
 
     def __init__(self, *, send_gate: asyncio.Event | None = None, send_error: Exception | None = None) -> None:
         self.send_gate = send_gate
@@ -171,13 +170,7 @@ def test_incoming_normalizes_private_user_metadata_without_exposing_raw_text():
     """Including Telegram text in a normalized update would expose content to later paths."""
     service = gateway()
     update = service.normalize_incoming(
-        TrustedIncomingUpdate(
-            update_id=9,
-            peer=TrustedTelegramEntity(entity_id=42, kind=TrustedTelegramEntityKind.USER),
-            sender=TrustedTelegramEntity(entity_id=42, kind=TrustedTelegramEntityKind.USER),
-            is_service=False,
-            received_at=datetime(2026, 8, 7, tzinfo=UTC),
-        )
+        service.inbound_decoder().private_user(update_id=9, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 7, tzinfo=UTC))
     )
 
     assert update is not None
@@ -187,27 +180,12 @@ def test_incoming_normalizes_private_user_metadata_without_exposing_raw_text():
 
 
 @pytest.mark.parametrize(
-    "peer_kind,sender_kind,is_service",
-    [
-        (TrustedTelegramEntityKind.GROUP, TrustedTelegramEntityKind.USER, False),
-        (TrustedTelegramEntityKind.SUPERGROUP, TrustedTelegramEntityKind.USER, False),
-        (TrustedTelegramEntityKind.CHANNEL, TrustedTelegramEntityKind.USER, False),
-        (TrustedTelegramEntityKind.USER, TrustedTelegramEntityKind.SERVICE, False),
-        (TrustedTelegramEntityKind.USER, TrustedTelegramEntityKind.BOT, False),
-        (TrustedTelegramEntityKind.UNKNOWN, TrustedTelegramEntityKind.USER, False),
-        (TrustedTelegramEntityKind.USER, TrustedTelegramEntityKind.USER, True),
-    ],
+    "spoofed",
+    [object(), type("Spoof", (), {"update_id": 9, "sender_id": 42, "peer_id": 42})()],
 )
-def test_incoming_defaults_to_deny_for_non_private_or_malformed_events(peer_kind, sender_kind, is_service):
+def test_incoming_defaults_to_deny_for_non_private_or_malformed_events(spoofed):
     """Loosening the classifier would allow group, service, bot, or malformed traffic through."""
-    event = TrustedIncomingUpdate(
-        update_id=9,
-        peer=TrustedTelegramEntity(entity_id=42, kind=peer_kind),
-        sender=TrustedTelegramEntity(entity_id=42, kind=sender_kind),
-        is_service=is_service,
-        received_at=datetime(2026, 8, 7, tzinfo=UTC),
-    )
-    assert gateway().normalize_incoming(event) is None
+    assert gateway().normalize_incoming(spoofed) is None
 
 
 def test_commands_registry_and_failures_redact_message_and_proxy_credentials():

@@ -149,6 +149,17 @@ class SqlAlchemyMessageDeliveryRepository:
             ).values(state="uncertain", error_code=error_code, owner_id=None, lease_expires_at=None)).rowcount
         return changed == 1
 
+    async def renew(self, command: MessageCommand, reservation: DeliveryReservation) -> bool:
+        with self._sessions.begin() as session:
+            changed = session.execute(update(message_deliveries).where(
+                message_deliveries.c.account_id == str(command.account_id),
+                message_deliveries.c.idempotency_key == command.idempotency_key,
+                message_deliveries.c.state == "pending",
+                message_deliveries.c.owner_id == str(self._owner_id),
+                message_deliveries.c.fence_token == reservation.fence_token,
+            ).values(lease_expires_at=self._now() + timedelta(seconds=self._lease_seconds))).rowcount
+        return changed == 1
+
     async def allow_resend_after_reconcile_miss(self, command: MessageCommand, reservation: DeliveryReservation) -> DeliveryReservation:
         now = self._now()
         with self._sessions.begin() as session:

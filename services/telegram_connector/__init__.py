@@ -29,9 +29,6 @@ from .gateway import (
     MessageCommand,
     TelegramGateway,
     TelegramUpdate,
-    TrustedIncomingUpdate,
-    TrustedTelegramEntity,
-    TrustedTelegramEntityKind,
 )
 from .persistence import (
     SqlAlchemyCompatibilityRegistry,
@@ -87,9 +84,6 @@ __all__ = [
     "TelegramGateway",
     "TelegramGatewayError",
     "TelegramUpdate",
-    "TrustedIncomingUpdate",
-    "TrustedTelegramEntity",
-    "TrustedTelegramEntityKind",
     "create_gateway_schema",
     "map_telegram_error",
 ]
