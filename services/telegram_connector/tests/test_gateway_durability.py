@@ -2,25 +2,28 @@
 
 import asyncio
 import copy
+import inspect
 import pickle
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
 
 import pytest
+import telegram_connector as public_api
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from telegram_connector import (
     CompatibilityRegistry,
-    ApprovedAdapterRegistry,
     InMemoryMessageDeliveryRepository,
     MessageCommand,
     SqlAlchemyCompatibilityRegistry,
     SqlAlchemyMessageDeliveryRepository,
     TelegramGateway,
+    TelegramGatewayError,
     create_gateway_schema,
 )
+from telegram_connector.gateway import _RegisteredSyntheticAdapter, _compose_registered_gateway
 
 
 class Clock:
@@ -64,6 +67,11 @@ def database(path: Path):
     engine = create_engine(f"sqlite+pysqlite:///{path}", future=True)
     create_gateway_schema(engine)
     return sessionmaker(engine, expire_on_commit=False)
+
+
+def assert_body_was_discarded(service: TelegramGateway, protected: MessageCommand) -> None:
+    with pytest.raises(TelegramGatewayError):
+        service._body_vault.read(protected.body_handle)
 
 
 def test_two_sqlalchemy_repository_instances_allow_exactly_one_sender(tmp_path):
@@ -136,13 +144,14 @@ def test_cancelled_network_effect_is_persisted_uncertain_before_restart_reconcil
         service = TelegramGateway(
             client=client, repository=repository, compatibility=CompatibilityRegistry(),
             adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
-            remote_deduplication=ApprovedAdapterRegistry(frozenset({("synthetic", "1")})).bind_remote_deduplication(client=client, adapter="synthetic", adapter_version="1"),
         )
-        sending = asyncio.create_task(service.send(command(service)))
+        protected = command(service)
+        sending = asyncio.create_task(service.send(protected))
         await entered.wait()
         sending.cancel()
         with pytest.raises(asyncio.CancelledError):
             await sending
+        assert_body_was_discarded(service, protected)
         persisted = await repository.record(command())
         assert persisted is not None and persisted.state == "uncertain"
 
@@ -171,11 +180,12 @@ def test_sqlalchemy_registry_upserts_one_safe_row_across_instances(tmp_path):
 
 def test_trusted_entity_update_rejects_spoofed_public_label_object():
     """Accepting untrusted peer_kind strings lets callers label a group event as a private user message."""
-    registry = ApprovedAdapterRegistry(frozenset({("synthetic", "1")}))
-    decoder = registry.bind_inbound_decoder(adapter="synthetic", adapter_version="1")
-    service = TelegramGateway(
-        client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(),
-        adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True, inbound_decoder=decoder,
+    service, decoder = _compose_registered_gateway(
+        adapter=_RegisteredSyntheticAdapter(Client()),
+        repository=InMemoryMessageDeliveryRepository(),
+        compatibility=CompatibilityRegistry(),
+        proxy_id=None,
+        connection_is_active=lambda: True,
     )
     trusted = decoder.private_user(
         update_id=7, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 10, tzinfo=UTC)
@@ -195,10 +205,29 @@ def test_trusted_entity_update_rejects_spoofed_public_label_object():
 def test_message_body_validation_never_includes_raw_sentinel_in_errors():
     """Delegating body validation to Pydantic exposes rejected Telegram text in public validation errors."""
     sentinel = "RAW-TELEGRAM-TEXT-" + "x" * 5000
+    service = TelegramGateway(
+        client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(),
+        adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
+    )
     with pytest.raises(ValueError) as failure:
-        TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True).create_command(account_id=UUID(int=1), peer_id=42, idempotency_key="safe-key", synthetic_body=sentinel)
+        service.create_command(
+            account_id=UUID(int=1), peer_id=42, idempotency_key="safe-key", synthetic_body=sentinel,
+        )
     assert sentinel not in str(failure.value)
     assert sentinel not in repr(failure.value)
+
+
+def test_rejected_command_metadata_does_not_strand_its_body_in_the_vault():
+    """Storing text before command validation leaves an unreachable raw body after validation fails."""
+    service = TelegramGateway(
+        client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(),
+        adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
+    )
+    with pytest.raises(ValueError):
+        service.create_command(
+            account_id=UUID(int=1), peer_id=-1, idempotency_key="safe-key", synthetic_body="synthetic-only",
+        )
+    assert service._body_vault._bodies == {}
 
 
 def test_lookup_miss_without_remote_deduplication_never_resends_after_expired_lease():
@@ -220,11 +249,86 @@ def test_lookup_miss_without_remote_deduplication_never_resends_after_expired_le
             client=client, repository=repository, compatibility=CompatibilityRegistry(),
             adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
         )
+        protected = command(gateway)
         with pytest.raises(Exception):
-            await gateway.send(command(gateway))
+            await gateway.send(protected)
         assert client.send_count == 0
+        assert_body_was_discarded(gateway, protected)
 
     asyncio.run(scenario())
+
+
+def test_timeout_and_reconciliation_miss_discard_the_gateway_body_handle():
+    """A timed-out live RPC must not leave its raw body in the gateway vault after return."""
+    async def scenario() -> None:
+        release = asyncio.Event()
+        client = Client(release)
+        service = TelegramGateway(
+            client=client,
+            repository=InMemoryMessageDeliveryRepository(lease_seconds=1),
+            compatibility=CompatibilityRegistry(),
+            adapter="synthetic",
+            adapter_version="1",
+            proxy_id=None,
+            connection_is_active=lambda: True,
+            outbound_deadline_seconds=0.01,
+            lease_renew_seconds=0.001,
+        )
+        protected = command(service)
+        with pytest.raises(TelegramGatewayError):
+            await service.send(protected)
+        assert client.reconcile_count == 1
+        assert_body_was_discarded(service, protected)
+        release.set()
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+
+def test_failed_completion_discards_the_gateway_body_handle():
+    """A repository completion rejection must not retain text after reconciliation also fails."""
+    async def scenario() -> None:
+        class RefusingCompletionRepository(InMemoryMessageDeliveryRepository):
+            async def complete(self, command, reservation, result):
+                return False
+
+        client = Client()
+        service = TelegramGateway(
+            client=client,
+            repository=RefusingCompletionRepository(),
+            compatibility=CompatibilityRegistry(),
+            adapter="synthetic",
+            adapter_version="1",
+            proxy_id=None,
+            connection_is_active=lambda: True,
+        )
+        protected = command(service)
+        with pytest.raises(TelegramGatewayError):
+            await service.send(protected)
+        assert_body_was_discarded(service, protected)
+
+    asyncio.run(scenario())
+
+
+def test_public_callers_cannot_mint_remote_or_inbound_authority():
+    """Public registries or constructor grants let an arbitrary client authorize its own effects."""
+    assert not hasattr(public_api, "ApprovedAdapterRegistry")
+    assert "remote_deduplication" not in inspect.signature(TelegramGateway).parameters
+    assert "inbound_decoder" not in inspect.signature(TelegramGateway).parameters
+
+    common = dict(
+        client=Client(),
+        repository=InMemoryMessageDeliveryRepository(),
+        compatibility=CompatibilityRegistry(),
+        adapter="synthetic",
+        adapter_version="1",
+        proxy_id=None,
+        connection_is_active=lambda: True,
+    )
+    with pytest.raises(TypeError):
+        TelegramGateway(**common, remote_deduplication=object())
+    with pytest.raises(TypeError):
+        TelegramGateway(**common, inbound_decoder=object())
 
 
 def test_delayed_first_send_and_replacement_key_produce_one_remote_effect_after_lease_expiry():
@@ -248,10 +352,12 @@ def test_delayed_first_send_and_replacement_key_produce_one_remote_effect_after_
                 return None
 
         client = KeyDeduplicatingClient()
-        service = TelegramGateway(
-            client=client, repository=repository, compatibility=CompatibilityRegistry(),
-            adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
-            remote_deduplication=ApprovedAdapterRegistry(frozenset({("synthetic", "1")})).bind_remote_deduplication(client=client, adapter="synthetic", adapter_version="1"),
+        service, _ = _compose_registered_gateway(
+            adapter=_RegisteredSyntheticAdapter(client),
+            repository=repository,
+            compatibility=CompatibilityRegistry(),
+            proxy_id=None,
+            connection_is_active=lambda: True,
         )
         result = await service.send(command(service))
         assert result.external_message_id == "remote-once"
@@ -262,15 +368,18 @@ def test_delayed_first_send_and_replacement_key_produce_one_remote_effect_after_
 
 def test_inbound_capability_is_bound_to_issuing_gateway_and_rejects_forgery():
     """A caller-constructible inbound model allows forged private-user provenance."""
-    registry = ApprovedAdapterRegistry(frozenset({("synthetic", "1")}))
-    one_decoder = registry.bind_inbound_decoder(adapter="synthetic", adapter_version="1")
-    two_decoder = registry.bind_inbound_decoder(adapter="synthetic", adapter_version="1")
-    one = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True, inbound_decoder=one_decoder)
-    two = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True, inbound_decoder=two_decoder)
+    one, one_decoder = _compose_registered_gateway(
+        adapter=_RegisteredSyntheticAdapter(Client()), repository=InMemoryMessageDeliveryRepository(),
+        compatibility=CompatibilityRegistry(), proxy_id=None, connection_is_active=lambda: True,
+    )
+    two, _ = _compose_registered_gateway(
+        adapter=_RegisteredSyntheticAdapter(Client()), repository=InMemoryMessageDeliveryRepository(),
+        compatibility=CompatibilityRegistry(), proxy_id=None, connection_is_active=lambda: True,
+    )
     capability = one_decoder.private_user(update_id=3, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 10, tzinfo=UTC))
     assert one.normalize_incoming(capability) is not None
     assert two.normalize_incoming(capability) is None
-    forged = capability.__class__(object(), 3, 42, 42, datetime(2026, 8, 10, tzinfo=UTC))
+    forged = capability.__class__(3, 42, 42, datetime(2026, 8, 10, tzinfo=UTC))
     assert one.normalize_incoming(forged) is None
 
 
@@ -299,23 +408,18 @@ def test_message_command_keeps_raw_body_only_in_gateway_vault_and_not_object_sta
 
 
 def test_counterfeit_remote_deduplication_capability_is_fail_closed_after_uncertainty():
-    """An object that merely resembles a registry binding cannot authorize a replacement effect."""
+    """An arbitrary adapter identity cannot enter the private trusted composition path."""
     async def scenario() -> None:
-        from telegram_connector.gateway import _RemoteDeduplicationCapability
-
         clock = Clock()
         repository = InMemoryMessageDeliveryRepository(clock=clock.now, lease_seconds=1)
         assert (await repository.reserve(command())).action == "send"
         clock.value += timedelta(seconds=2)
         client = Client()
-        counterfeit = _RemoteDeduplicationCapability(object(), client, "synthetic", "1")
-        service = TelegramGateway(
-            client=client, repository=repository, compatibility=CompatibilityRegistry(),
-            adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
-            remote_deduplication=counterfeit,
-        )
-        with pytest.raises(Exception):
-            await service.send(command(service))
+        with pytest.raises(TypeError):
+            _compose_registered_gateway(
+                adapter=client, repository=repository, compatibility=CompatibilityRegistry(),
+                proxy_id=None, connection_is_active=lambda: True,
+            )
         assert client.send_count == 0
 
     asyncio.run(scenario())
@@ -367,18 +471,15 @@ def test_live_expired_sender_and_recovery_share_one_remote_deduplicated_effect(t
                 self.reconcile_count += 1
                 return remote.effects.get(idempotency_key)
 
-        registry = ApprovedAdapterRegistry(frozenset({("synthetic", "1")}))
         old_client, recovery_client = DelayedCancellationResistantClient(delayed=True), DelayedCancellationResistantClient(delayed=False)
-        first = TelegramGateway(
-            client=old_client, repository=first_repository, compatibility=CompatibilityRegistry(),
-            adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
-            remote_deduplication=registry.bind_remote_deduplication(client=old_client, adapter="synthetic", adapter_version="1"),
+        first, _ = _compose_registered_gateway(
+            adapter=_RegisteredSyntheticAdapter(old_client), repository=first_repository,
+            compatibility=CompatibilityRegistry(), proxy_id=None, connection_is_active=lambda: True,
             outbound_deadline_seconds=0.5, lease_renew_seconds=0.1,
         )
-        recovered = TelegramGateway(
-            client=recovery_client, repository=second_repository, compatibility=CompatibilityRegistry(),
-            adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
-            remote_deduplication=registry.bind_remote_deduplication(client=recovery_client, adapter="synthetic", adapter_version="1"),
+        recovered, _ = _compose_registered_gateway(
+            adapter=_RegisteredSyntheticAdapter(recovery_client), repository=second_repository,
+            compatibility=CompatibilityRegistry(), proxy_id=None, connection_is_active=lambda: True,
             outbound_deadline_seconds=0.5, lease_renew_seconds=0.1,
         )
         original = asyncio.create_task(first.send(command(first)))

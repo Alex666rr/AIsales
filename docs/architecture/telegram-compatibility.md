@@ -23,10 +23,14 @@ phone numbers, account codes, tokens, passwords, or session material.
 ## Idempotent message gateway
 
 The outbound gateway accepts an active connection predicate, normalized positive
-peer ID, idempotency key, and an ephemeral message body. The body is excluded
-from all Pydantic serialization and `repr`, and it is passed only to the
-injected network client. Delivery rows retain account ID, peer ID, idempotency
-key, state, stable error code, and external message ID—not the body.
+peer ID, idempotency key, and an ephemeral message body. The body lives only in
+a gateway-local vault behind an opaque command handle. It is excluded from all
+Pydantic serialization and `repr`, and it is passed only to the injected
+network client. Rejected command metadata removes the stored body immediately.
+Once `send()` returns or raises, one outer `finally` removes the body for every
+terminal branch; same-call reconciliation and an authorized resend may retain
+it only until that call ends. Delivery rows retain account ID, peer ID,
+idempotency key, state, stable error code, and external message ID—not the body.
 
 The PostgreSQL `MessageDeliveryRepository` contract is the source of truth. Its
 `reserve` operation is one transaction that persists a pending row before any
@@ -37,11 +41,23 @@ with the peer and idempotency key. A discovered remote message completes the
 same row; only an atomic reconciled miss can grant a new sender reservation.
 No Redis or process-local lock is authoritative.
 
+Remote replacement authority is not a caller-supplied capability. The public
+gateway constructor has no decoder or remote-deduplication grant parameters,
+and the package exports no authority registry. A private application-composition
+path matches the exact registered adapter implementation identity to fixed
+capability metadata. Directly constructed gateways therefore fail closed after
+an uncertain reconciliation miss. The registered stage-0 adapter still sends
+the same idempotency key for every live replacement request, so remote
+deduplication, not a local lease, defines the one-effect boundary.
+
 Incoming events are default-deny. The normalized `TelegramUpdate` contains only
-an update ID, sender ID, peer ID, and receipt timestamp. The classifier accepts
-only private, non-service user messages with positive IDs; it excludes groups,
-supergroups, channels, bots, service traffic, and malformed/unknown events.
-It deliberately carries no message text and creates no AI path.
+an update ID, sender ID, peer ID, and receipt timestamp. Decoder issuance is
+private to the same fixed adapter composition. Each gateway tracks only the
+opaque envelopes issued by its bound decoder, so direct, forged, and separately
+issued envelopes are denied. The classifier accepts only authenticated private,
+non-service user messages with positive IDs; it excludes groups, supergroups,
+channels, bots, service traffic, and malformed/unknown events. It deliberately
+carries no message text and creates no AI path.
 
 ## Live evidence procedure
 
@@ -73,8 +89,9 @@ primary key. Direct operation uses a non-null empty proxy key so PostgreSQL
 cannot create multiple NULL-key rows. The in-memory repository and registry are
 explicit test fakes only.
 
-Trusted inbound adapter code emits `TrustedIncomingUpdate` and authenticated
-entity enums. The gateway refuses arbitrary public labels such as `peer_kind`
-and accepts only non-service user-to-user envelopes. Outbound body validation
-uses `MessageCommand.create`; the synthetic body is a private attribute, so
-Pydantic errors, repr, and serialization cannot expose rejected raw text.
+Trusted inbound adapter composition issues opaque gateway-bound envelopes. The
+gateway refuses arbitrary public labels such as `peer_kind` and accepts only
+authenticated non-service user-to-user envelopes. Outbound body validation uses
+`MessageCommand.create`; the command contains only metadata and an opaque UUID
+handle, so Pydantic errors, repr, copies, and serialization cannot expose raw
+text.

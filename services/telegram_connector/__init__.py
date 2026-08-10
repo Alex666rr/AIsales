@@ -23,7 +23,6 @@ from .error_codes import (
     map_telegram_error,
 )
 from .gateway import (
-    ApprovedAdapterRegistry,
     DeliveryRecord,
     DeliveryResult,
     InMemoryMessageDeliveryRepository,
@@ -54,7 +53,6 @@ __all__ = [
     "DeliveryRecord",
     "DeliveryResult",
     "AdapterRegistry",
-    "ApprovedAdapterRegistry",
     "AuthStep",
     "BotAdapter",
     "EncryptedSessionStore",

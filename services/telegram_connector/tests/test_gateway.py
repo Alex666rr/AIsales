@@ -8,11 +8,11 @@ import pytest
 
 from telegram_connector import (
     CompatibilityRegistry,
-    ApprovedAdapterRegistry,
     InMemoryMessageDeliveryRepository,
     TelegramGateway,
     TelegramGatewayError,
 )
+from telegram_connector.gateway import _RegisteredSyntheticAdapter, _compose_registered_gateway
 
 
 class SyntheticClient:
@@ -26,9 +26,11 @@ class SyntheticClient:
         self.send_count = 0
         self.reconcile_count = 0
         self.remote: dict[str, str] = {}
+        self.received_bodies: list[str] = []
 
     async def send_message(self, peer_id: int, message_text: str, idempotency_key: str) -> str:
         self.send_count += 1
+        self.received_bodies.append(message_text)
         if self.send_gate is not None:
             await self.send_gate.wait()
         if self.send_error is not None:
@@ -61,8 +63,12 @@ def gateway(client: SyntheticClient | None = None, repository=None) -> TelegramG
         adapter_version="1.0",
         proxy_id=UUID(int=20),
         connection_is_active=lambda: True,
-        remote_deduplication=ApprovedAdapterRegistry(frozenset({("synthetic", "1.0")})).bind_remote_deduplication(client=selected, adapter="synthetic", adapter_version="1.0"),
     )
+
+
+def assert_body_was_discarded(service: TelegramGateway, protected) -> None:
+    with pytest.raises(TelegramGatewayError):
+        service._body_vault.read(protected.body_handle)
 
 
 def test_send_returns_same_result_for_same_idempotency_key():
@@ -76,6 +82,7 @@ def test_send_returns_same_result_for_same_idempotency_key():
 
         assert first.external_message_id == second.external_message_id == "synthetic-1"
         assert client.send_count == 1
+        assert client.received_bodies == ["synthetic-only-message"]
 
     asyncio.run(scenario())
 
@@ -175,24 +182,37 @@ def test_gateway_rejects_inactive_connection_without_a_network_effect():
             proxy_id=None,
             connection_is_active=lambda: False,
         )
+        protected = command(service)
         with pytest.raises(TelegramGatewayError) as failure:
-            await service.send(command(service))
+            await service.send(protected)
         assert failure.value.code == "connection_inactive"
         assert client.send_count == 0
+        assert_body_was_discarded(service, protected)
+
+    asyncio.run(scenario())
+
+
+def test_adapter_send_error_discards_the_gateway_body_handle():
+    """Returning from an adapter failure with a live vault entry retains raw message text."""
+    async def scenario() -> None:
+        service = gateway(SyntheticClient(send_error=RuntimeError("safe adapter failure")))
+        protected = command(service)
+        with pytest.raises(TelegramGatewayError):
+            await service.send(protected)
+        assert_body_was_discarded(service, protected)
 
     asyncio.run(scenario())
 
 
 def test_incoming_normalizes_private_user_metadata_without_exposing_raw_text():
     """Including Telegram text in a normalized update would expose content to later paths."""
-    registry = ApprovedAdapterRegistry(frozenset({("synthetic", "1.0")}))
-    decoder = registry.bind_inbound_decoder(adapter="synthetic", adapter_version="1.0")
     client = SyntheticClient()
-    service = TelegramGateway(
-        client=client, repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(),
-        adapter="synthetic", adapter_version="1.0", proxy_id=None, connection_is_active=lambda: True,
-        remote_deduplication=registry.bind_remote_deduplication(client=client, adapter="synthetic", adapter_version="1.0"),
-        inbound_decoder=decoder,
+    service, decoder = _compose_registered_gateway(
+        adapter=_RegisteredSyntheticAdapter(client),
+        repository=InMemoryMessageDeliveryRepository(),
+        compatibility=CompatibilityRegistry(),
+        proxy_id=None,
+        connection_is_active=lambda: True,
     )
     update = service.normalize_incoming(
         decoder.private_user(update_id=9, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 7, tzinfo=UTC))
