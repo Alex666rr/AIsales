@@ -1,0 +1,59 @@
+# Telegram compatibility evidence
+
+Stage 0 records technical compatibility evidence only. A successful row proves
+that an injected adapter/version and assigned proxy completed a synthetic test
+message operation; it does not permit production messaging, proxy rotation, or
+any Telegram-to-AI processing.
+
+`CompatibilityRegistry` records these safe fields:
+
+- adapter identifier and adapter version;
+- proxy UUID, never a proxy endpoint or credentials;
+- normalized outcome (`sent`, `reconciled`, connection state, or a stable
+  error code); and
+- an aware UTC timestamp.
+
+It upserts one row per adapter/version/proxy UUID combination, replacing only
+the normalized outcome and timestamp on a later observation.
+
+The registry accepts a `ProxyConfig` only to extract its UUID. It cannot store
+the proxy URL, username, or password. It does not accept Telegram message text,
+phone numbers, account codes, tokens, passwords, or session material.
+
+## Idempotent message gateway
+
+The outbound gateway accepts an active connection predicate, normalized positive
+peer ID, idempotency key, and an ephemeral message body. The body is excluded
+from all Pydantic serialization and `repr`, and it is passed only to the
+injected network client. Delivery rows retain account ID, peer ID, idempotency
+key, state, stable error code, and external message ID—not the body.
+
+The PostgreSQL `MessageDeliveryRepository` contract is the source of truth. Its
+`reserve` operation is one transaction that persists a pending row before any
+send. One sender receives the reservation; duplicate callers wait and return
+the same completed result. A failed send is first persisted as `uncertain`.
+Before any later resend, the gateway calls the injected reconciliation boundary
+with the peer and idempotency key. A discovered remote message completes the
+same row; only an atomic reconciled miss can grant a new sender reservation.
+No Redis or process-local lock is authoritative.
+
+Incoming events are default-deny. The normalized `TelegramUpdate` contains only
+an update ID, sender ID, peer ID, and receipt timestamp. The classifier accepts
+only private, non-service user messages with positive IDs; it excludes groups,
+supergroups, channels, bots, service traffic, and malformed/unknown events.
+It deliberately carries no message text and creates no AI path.
+
+## Live evidence procedure
+
+`services/telegram_connector/tests/manual/test_live_roundtrip.py` is disabled
+unless `RUN_TELEGRAM_LIVE_TESTS=1`. It additionally requires an ignored,
+project-owned `TELEGRAM_LIVE_ROUNDTRIP_FACTORY` fixture. That fixture owns all
+credentials and sessions and must provide async send, receive, restart,
+compatibility-row, and sender-session archive operations. The test sends one
+unique synthetic marker between two project-owned accounts, verifies receipt,
+restarts the connector, verifies one reply, then archives the sender session in
+`finally` even when an assertion fails. It verifies one compatibility row per
+adapter/version/proxy UUID combination.
+
+Never place the factory, credentials, sessions, raw messages, or account
+identifiers in version control or test output.

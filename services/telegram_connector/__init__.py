@@ -14,6 +14,17 @@ from .adapters import (
     TelethonStringAdapter,
 )
 from .config import ConnectorSettings
+from .compatibility import CompatibilityRecord, CompatibilityRegistry
+from .error_codes import TelegramGatewayError, map_telegram_error
+from .gateway import (
+    DeliveryRecord,
+    DeliveryResult,
+    InMemoryMessageDeliveryRepository,
+    IncomingTelegramEvent,
+    MessageCommand,
+    TelegramGateway,
+    TelegramUpdate,
+)
 from .quarantine import QuarantinedUpload, SessionQuarantineProcessor, UnsafeQuarantinedUpload
 from .session_store import (
     EncryptedSessionStore,
@@ -27,10 +38,17 @@ from .runtime.supervisor import ConnectionSupervisor
 
 __all__ = [
     "ConnectorSettings",
+    "CompatibilityRecord",
+    "CompatibilityRegistry",
+    "DeliveryRecord",
+    "DeliveryResult",
     "AdapterRegistry",
     "AuthStep",
     "BotAdapter",
     "EncryptedSessionStore",
+    "InMemoryMessageDeliveryRepository",
+    "IncomingTelegramEvent",
+    "MessageCommand",
     "QuarantinedUpload",
     "PhoneAdapter",
     "QRAdapter",
@@ -49,4 +67,8 @@ __all__ = [
     "ConnectionSupervisor",
     "ProxyConfig",
     "ProxyHealth",
+    "TelegramGateway",
+    "TelegramGatewayError",
+    "TelegramUpdate",
+    "map_telegram_error",
 ]
