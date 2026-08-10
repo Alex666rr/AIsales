@@ -1,6 +1,7 @@
 """Durability contracts shared by independent SQLAlchemy gateway repositories."""
 
 import asyncio
+import copy
 import pickle
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -51,10 +52,12 @@ class Client:
         return self.remote.get(idempotency_key)
 
 
-def command() -> MessageCommand:
-    return MessageCommand.create(
-        account_id=UUID(int=1), peer_id=42, idempotency_key="durable-key", synthetic_body="synthetic-only"
-    )
+def command(service: TelegramGateway | None = None) -> MessageCommand:
+    if service is not None:
+        return service.create_command(
+            account_id=UUID(int=1), peer_id=42, idempotency_key="durable-key", synthetic_body="synthetic-only"
+        )
+    return MessageCommand(account_id=UUID(int=1), peer_id=42, idempotency_key="durable-key", body_handle=UUID(int=99))
 
 
 def database(path: Path):
@@ -80,12 +83,12 @@ def test_two_sqlalchemy_repository_instances_allow_exactly_one_sender(tmp_path):
             client=client, repository=second_repository, compatibility=CompatibilityRegistry(),
             adapter="synthetic", adapter_version="1", proxy_id=UUID(int=2), connection_is_active=lambda: True,
         )
-        initial = asyncio.create_task(first.send(command()))
+        initial = asyncio.create_task(first.send(command(first)))
         while client.send_count != 1:
             if initial.done():
                 initial.result()
             await asyncio.sleep(0)
-        duplicate = asyncio.create_task(second.send(command()))
+        duplicate = asyncio.create_task(second.send(command(second)))
         await asyncio.sleep(0)
         assert client.send_count == 1
         release.set()
@@ -135,7 +138,7 @@ def test_cancelled_network_effect_is_persisted_uncertain_before_restart_reconcil
             adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
             remote_deduplication=ApprovedAdapterRegistry(frozenset({("synthetic", "1")})).bind_remote_deduplication(client=client, adapter="synthetic", adapter_version="1"),
         )
-        sending = asyncio.create_task(service.send(command()))
+        sending = asyncio.create_task(service.send(command(service)))
         await entered.wait()
         sending.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -168,11 +171,13 @@ def test_sqlalchemy_registry_upserts_one_safe_row_across_instances(tmp_path):
 
 def test_trusted_entity_update_rejects_spoofed_public_label_object():
     """Accepting untrusted peer_kind strings lets callers label a group event as a private user message."""
+    registry = ApprovedAdapterRegistry(frozenset({("synthetic", "1")}))
+    decoder = registry.bind_inbound_decoder(adapter="synthetic", adapter_version="1")
     service = TelegramGateway(
         client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(),
-        adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
+        adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True, inbound_decoder=decoder,
     )
-    trusted = service._decoder.private_user(
+    trusted = decoder.private_user(
         update_id=7, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 10, tzinfo=UTC)
     )
     assert service.normalize_incoming(trusted) is not None
@@ -191,7 +196,7 @@ def test_message_body_validation_never_includes_raw_sentinel_in_errors():
     """Delegating body validation to Pydantic exposes rejected Telegram text in public validation errors."""
     sentinel = "RAW-TELEGRAM-TEXT-" + "x" * 5000
     with pytest.raises(ValueError) as failure:
-        MessageCommand.create(account_id=UUID(int=1), peer_id=42, idempotency_key="safe-key", synthetic_body=sentinel)
+        TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True).create_command(account_id=UUID(int=1), peer_id=42, idempotency_key="safe-key", synthetic_body=sentinel)
     assert sentinel not in str(failure.value)
     assert sentinel not in repr(failure.value)
 
@@ -216,7 +221,7 @@ def test_lookup_miss_without_remote_deduplication_never_resends_after_expired_le
             adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
         )
         with pytest.raises(Exception):
-            await gateway.send(command())
+            await gateway.send(command(gateway))
         assert client.send_count == 0
 
     asyncio.run(scenario())
@@ -248,7 +253,7 @@ def test_delayed_first_send_and_replacement_key_produce_one_remote_effect_after_
             adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
             remote_deduplication=ApprovedAdapterRegistry(frozenset({("synthetic", "1")})).bind_remote_deduplication(client=client, adapter="synthetic", adapter_version="1"),
         )
-        result = await service.send(command())
+        result = await service.send(command(service))
         assert result.external_message_id == "remote-once"
         assert len(client.remote) == 1
 
@@ -257,9 +262,12 @@ def test_delayed_first_send_and_replacement_key_produce_one_remote_effect_after_
 
 def test_inbound_capability_is_bound_to_issuing_gateway_and_rejects_forgery():
     """A caller-constructible inbound model allows forged private-user provenance."""
-    one = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True)
-    two = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True)
-    capability = one._decoder.private_user(update_id=3, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 10, tzinfo=UTC))
+    registry = ApprovedAdapterRegistry(frozenset({("synthetic", "1")}))
+    one_decoder = registry.bind_inbound_decoder(adapter="synthetic", adapter_version="1")
+    two_decoder = registry.bind_inbound_decoder(adapter="synthetic", adapter_version="1")
+    one = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True, inbound_decoder=one_decoder)
+    two = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True, inbound_decoder=two_decoder)
+    capability = one_decoder.private_user(update_id=3, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 10, tzinfo=UTC))
     assert one.normalize_incoming(capability) is not None
     assert two.normalize_incoming(capability) is None
     forged = capability.__class__(object(), 3, 42, 42, datetime(2026, 8, 10, tzinfo=UTC))
@@ -269,8 +277,120 @@ def test_inbound_capability_is_bound_to_issuing_gateway_and_rejects_forgery():
 def test_message_command_pickle_and_state_export_fail_without_body_sentinel():
     """Private Pydantic attributes can still leak through pickle or explicit state unless disabled."""
     sentinel = "RAW-TELEGRAM-PICKLE-SENTINEL"
-    protected = MessageCommand.create(account_id=UUID(int=1), peer_id=42, idempotency_key="pickle-key", synthetic_body=sentinel)
-    for operation in (lambda: pickle.dumps(protected), protected.__getstate__, lambda: protected.model_copy()):
+    protected = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True).create_command(account_id=UUID(int=1), peer_id=42, idempotency_key="pickle-key", synthetic_body=sentinel)
+    for operation in (lambda: pickle.dumps(protected), protected.__getstate__):
         with pytest.raises(Exception) as failure:
             operation()
         assert sentinel not in str(failure.value)
+    assert sentinel not in repr(protected.model_copy().model_dump())
+
+
+def test_message_command_keeps_raw_body_only_in_gateway_vault_and_not_object_state():
+    """Keeping text in Pydantic private state leaks it through ordinary object inspection/copies."""
+    sentinel = "RAW-TELEGRAM-VAULT-SENTINEL"
+    protected = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True).create_command(account_id=UUID(int=1), peer_id=42, idempotency_key="vault-key", synthetic_body=sentinel)
+
+    exposed = repr(protected.__dict__) + repr(getattr(protected, "__pydantic_private__", {}))
+    assert sentinel not in exposed
+    for operation in (lambda: copy.copy(protected), lambda: copy.deepcopy(protected)):
+        copied = operation()
+        assert sentinel not in repr(copied.__dict__)
+        assert sentinel not in repr(getattr(copied, "__pydantic_private__", {}))
+
+
+def test_counterfeit_remote_deduplication_capability_is_fail_closed_after_uncertainty():
+    """An object that merely resembles a registry binding cannot authorize a replacement effect."""
+    async def scenario() -> None:
+        from telegram_connector.gateway import _RemoteDeduplicationCapability
+
+        clock = Clock()
+        repository = InMemoryMessageDeliveryRepository(clock=clock.now, lease_seconds=1)
+        assert (await repository.reserve(command())).action == "send"
+        clock.value += timedelta(seconds=2)
+        client = Client()
+        counterfeit = _RemoteDeduplicationCapability(object(), client, "synthetic", "1")
+        service = TelegramGateway(
+            client=client, repository=repository, compatibility=CompatibilityRegistry(),
+            adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
+            remote_deduplication=counterfeit,
+        )
+        with pytest.raises(Exception):
+            await service.send(command(service))
+        assert client.send_count == 0
+
+    asyncio.run(scenario())
+
+
+def test_live_expired_sender_and_recovery_share_one_remote_deduplicated_effect(tmp_path):
+    """A live old RPC and lease-recovery RPC must share a remote key with exactly one effect."""
+    async def scenario() -> None:
+        sessions = database(tmp_path / "two-live-rpcs.db")
+        clock = Clock()
+        first_repository = SqlAlchemyMessageDeliveryRepository(sessions, clock=clock, lease_seconds=1)
+        second_repository = SqlAlchemyMessageDeliveryRepository(sessions, clock=clock, lease_seconds=1)
+        entered, release, first_finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+        class RemoteService:
+            def __init__(self) -> None:
+                self.requests = 0
+                self.effects: dict[str, str] = {}
+
+            def effect(self, key: str) -> str:
+                self.requests += 1
+                return self.effects.setdefault(key, "remote-effect-1")
+
+            @property
+            def effect_count(self) -> int:
+                return len(self.effects)
+
+        remote = RemoteService()
+
+        class DelayedCancellationResistantClient(Client):
+            def __init__(self, *, delayed: bool) -> None:
+                super().__init__()
+                self.delayed = delayed
+
+            async def send_message(self, peer_id: int, message_text: str, idempotency_key: str) -> str:
+                self.send_count += 1
+                assert message_text == "synthetic-only"
+                if self.delayed:
+                    entered.set()
+                    try:
+                        await release.wait()
+                    except asyncio.CancelledError:
+                        await release.wait()
+                result = remote.effect(idempotency_key)
+                first_finished.set()
+                return result
+
+            async def reconcile_message(self, peer_id: int, idempotency_key: str) -> str | None:
+                self.reconcile_count += 1
+                return remote.effects.get(idempotency_key)
+
+        registry = ApprovedAdapterRegistry(frozenset({("synthetic", "1")}))
+        old_client, recovery_client = DelayedCancellationResistantClient(delayed=True), DelayedCancellationResistantClient(delayed=False)
+        first = TelegramGateway(
+            client=old_client, repository=first_repository, compatibility=CompatibilityRegistry(),
+            adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
+            remote_deduplication=registry.bind_remote_deduplication(client=old_client, adapter="synthetic", adapter_version="1"),
+            outbound_deadline_seconds=0.5, lease_renew_seconds=0.1,
+        )
+        recovered = TelegramGateway(
+            client=recovery_client, repository=second_repository, compatibility=CompatibilityRegistry(),
+            adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
+            remote_deduplication=registry.bind_remote_deduplication(client=recovery_client, adapter="synthetic", adapter_version="1"),
+            outbound_deadline_seconds=0.5, lease_renew_seconds=0.1,
+        )
+        original = asyncio.create_task(first.send(command(first)))
+        await entered.wait()
+        clock.value += timedelta(seconds=2)
+        replacement = await recovered.send(command(recovered))
+        assert replacement.external_message_id == "remote-effect-1"
+        release.set()
+        await first_finished.wait()
+        with pytest.raises(Exception):
+            await original
+        assert remote.effect_count == 1
+        assert remote.effects["durable-key"] == replacement.external_message_id
+
+    asyncio.run(scenario())

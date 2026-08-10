@@ -4,35 +4,28 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Callable, Literal, Protocol
 from uuid import UUID, uuid4
+from weakref import WeakSet
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from telegram_connector.compatibility import CompatibilityOutcome, CompatibilityRegistry
 from telegram_connector.error_codes import TelegramErrorCode, TelegramGatewayError, map_telegram_error
 
 
 class MessageCommand(BaseModel):
-    """The sole outbound command shape; its raw text cannot serialize or appear in reprs."""
+    """Content-free public command metadata; its body is an opaque vault handle."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     account_id: UUID
     peer_id: int = Field(gt=0)
     idempotency_key: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9._:-]+$")
-    _synthetic_body: str = PrivateAttr()
+    body_handle: UUID
 
     @classmethod
-    def create(cls, *, account_id: UUID, peer_id: int, idempotency_key: str, synthetic_body: object) -> "MessageCommand":
-        """Accept an ephemeral synthetic body without letting Pydantic echo it in validation errors."""
-        if not isinstance(synthetic_body, str) or not 1 <= len(synthetic_body) <= 4096:
-            raise ValueError("invalid synthetic message body")
-        command = cls(account_id=account_id, peer_id=peer_id, idempotency_key=idempotency_key)
-        object.__setattr__(command, "_synthetic_body", synthetic_body)
-        return command
-
-    def body_for_injected_client(self) -> str:
-        """Return the body only at the injected network boundary; it is never serializable state."""
-        return self._synthetic_body
+    def create(cls, *, account_id: UUID, peer_id: int, idempotency_key: str, body_handle: UUID) -> "MessageCommand":
+        """Create public metadata after a composition-bound vault has accepted the body."""
+        return cls(account_id=account_id, peer_id=peer_id, idempotency_key=idempotency_key, body_handle=body_handle)
 
     def __reduce_ex__(self, protocol: int):
         raise TypeError("message command serialization is disabled")
@@ -41,7 +34,30 @@ class MessageCommand(BaseModel):
         raise TypeError("message command serialization is disabled")
 
     def model_copy(self, *, update=None, deep: bool = False):
-        raise TypeError("message command copying is disabled")
+        return super().model_copy(update=update, deep=deep)
+
+
+class _EphemeralBodyVault:
+    """Gateway-local body store; raw text never becomes command or durable state."""
+
+    def __init__(self) -> None:
+        self._bodies: dict[UUID, str] = {}
+
+    def store(self, body: object) -> UUID:
+        if not isinstance(body, str) or not 1 <= len(body) <= 4096:
+            raise ValueError("invalid synthetic message body")
+        handle = uuid4()
+        self._bodies[handle] = body
+        return handle
+
+    def read(self, handle: UUID) -> str:
+        try:
+            return self._bodies[handle]
+        except KeyError:
+            raise TelegramGatewayError("telegram_unknown") from None
+
+    def discard(self, handle: UUID) -> None:
+        self._bodies.pop(handle, None)
 
 
 class DeliveryResult(BaseModel):
@@ -62,8 +78,17 @@ class _InboundCapability:
 
 
 class _InboundDecoder:
+    __slots__ = ("_issuer", "_bound", "__weakref__")
+
     def __init__(self, issuer: object) -> None:
         self._issuer = issuer
+        self._bound = False
+
+    def _bind_gateway(self) -> object:
+        if self._bound:
+            raise ValueError("inbound decoder is already bound")
+        self._bound = True
+        return self._issuer
 
     def private_user(self, *, update_id: int, sender_id: int, peer_id: int, received_at: datetime) -> object:
         if update_id < 0 or sender_id <= 0 or peer_id <= 0 or received_at.tzinfo is None:
@@ -109,14 +134,28 @@ class ApprovedAdapterRegistry:
     def bind_remote_deduplication(self, *, client: OutboundTelegramClient, adapter: str, adapter_version: str) -> object:
         if (adapter, adapter_version) not in self._approved:
             raise ValueError("adapter/version lacks approved remote idempotency")
-        return _RemoteDeduplicationCapability(self._issuer, client, adapter, adapter_version)
+        capability = _RemoteDeduplicationCapability(self._issuer, client, adapter, adapter_version)
+        _ISSUED_REMOTE_DEDUPLICATION_CAPABILITIES.add(capability)
+        return capability
+
+    def bind_inbound_decoder(self, *, adapter: str, adapter_version: str) -> object:
+        """Issue the adapter-composition decoder for exactly one gateway classifier."""
+        if (adapter, adapter_version) not in self._approved:
+            raise ValueError("adapter/version lacks approved inbound provenance")
+        decoder = _InboundDecoder(object())
+        _ISSUED_INBOUND_DECODERS.add(decoder)
+        return decoder
 
 
 class _RemoteDeduplicationCapability:
-    __slots__ = ("issuer", "client", "adapter", "adapter_version")
+    __slots__ = ("issuer", "client", "adapter", "adapter_version", "__weakref__")
 
     def __init__(self, issuer: object, client: OutboundTelegramClient, adapter: str, adapter_version: str) -> None:
         self.issuer, self.client, self.adapter, self.adapter_version = issuer, client, adapter, adapter_version
+
+
+_ISSUED_REMOTE_DEDUPLICATION_CAPABILITIES: WeakSet[_RemoteDeduplicationCapability] = WeakSet()
+_ISSUED_INBOUND_DECODERS: WeakSet[_InboundDecoder] = WeakSet()
 
 
 DeliveryState = Literal["pending", "uncertain", "completed"]
@@ -305,6 +344,7 @@ class TelegramGateway:
         proxy_id: UUID | None,
         connection_is_active: Callable[[], bool],
         remote_deduplication: object | None = None,
+        inbound_decoder: object | None = None,
         outbound_deadline_seconds: float | None = None,
         lease_renew_seconds: float | None = None,
     ) -> None:
@@ -322,9 +362,20 @@ class TelegramGateway:
         self._connection_is_active = connection_is_active
         self._outbound_deadline_seconds = outbound_deadline_seconds
         self._lease_renew_seconds = lease_renew_seconds
-        self._inbound_issuer = object()
-        self._decoder = _InboundDecoder(self._inbound_issuer)
+        self._body_vault = _EphemeralBodyVault()
+        self._inbound_issuer = self._bind_inbound_decoder(inbound_decoder)
         self._remote_deduplication = remote_deduplication
+
+    def create_command(
+        self, *, account_id: UUID, peer_id: int, idempotency_key: str, synthetic_body: object
+    ) -> MessageCommand:
+        """Place synthetic text in this gateway's ephemeral vault and return safe metadata."""
+        return MessageCommand.create(
+            account_id=account_id,
+            peer_id=peer_id,
+            idempotency_key=idempotency_key,
+            body_handle=self._body_vault.store(synthetic_body),
+        )
 
     async def send(self, command: MessageCommand) -> DeliveryResult:
         """Return one durable result; ambiguous sends always reconcile before a later resend."""
@@ -334,6 +385,7 @@ class TelegramGateway:
         while True:
             reservation = await self._repository.reserve(command)
             if reservation.action == "completed":
+                self._body_vault.discard(command.body_handle)
                 if reservation.result is None:
                     raise TelegramGatewayError("invalid_peer")
                 return reservation.result
@@ -349,6 +401,7 @@ class TelegramGateway:
                     raise TelegramGatewayError("telegram_unknown")
                 reservation = await self._repository.allow_resend_after_reconcile_miss(command, reservation)
                 if reservation.action == "completed" and reservation.result is not None:
+                    self._body_vault.discard(command.body_handle)
                     return reservation.result
                 if reservation.action == "wait":
                     await self._repository.wait(command)
@@ -357,7 +410,7 @@ class TelegramGateway:
 
     def normalize_incoming(self, event: object) -> TelegramUpdate | None:
         """Default-deny everything except an authenticated private non-service user envelope."""
-        if not isinstance(event, _InboundCapability) or event._issuer is not self._inbound_issuer:
+        if self._inbound_issuer is None or not isinstance(event, _InboundCapability) or event._issuer is not self._inbound_issuer:
             return None
         return TelegramUpdate(
             update_id=event.update_id,
@@ -393,11 +446,14 @@ class TelegramGateway:
             if reconciled is not None:
                 return reconciled
             raise TelegramGatewayError("telegram_unknown")
+        self._body_vault.discard(command.body_handle)
         self._record("sent")
         return result
 
     async def _send_with_renewal(self, command: MessageCommand, reservation: DeliveryReservation) -> str:
-        task = asyncio.create_task(self._client.send_message(command.peer_id, command.body_for_injected_client(), command.idempotency_key))
+        task = asyncio.create_task(
+            self._client.send_message(command.peer_id, self._body_vault.read(command.body_handle), command.idempotency_key)
+        )
         deadline = asyncio.get_running_loop().time() + self._outbound_deadline_seconds
         while True:
             remaining = deadline - asyncio.get_running_loop().time()
@@ -428,6 +484,7 @@ class TelegramGateway:
         if not await self._repository.complete(command, reservation, result):
             self._record("telegram_unknown")
             raise TelegramGatewayError("telegram_unknown")
+        self._body_vault.discard(command.body_handle)
         self._record("reconciled")
         return result
 
@@ -449,7 +506,22 @@ class TelegramGateway:
 
     def _has_approved_remote_deduplication(self) -> bool:
         capability = self._remote_deduplication
-        return isinstance(capability, _RemoteDeduplicationCapability) and capability.client is self._client and capability.adapter == self._adapter and capability.adapter_version == self._adapter_version
+        return (
+            isinstance(capability, _RemoteDeduplicationCapability)
+            and capability in _ISSUED_REMOTE_DEDUPLICATION_CAPABILITIES
+            and capability.client is self._client
+            and capability.adapter == self._adapter
+            and capability.adapter_version == self._adapter_version
+        )
+
+    @staticmethod
+    def _bind_inbound_decoder(decoder: object | None) -> object | None:
+        if not isinstance(decoder, _InboundDecoder) or decoder not in _ISSUED_INBOUND_DECODERS:
+            return None
+        try:
+            return decoder._bind_gateway()
+        except ValueError:
+            return None
 
 
 def _consume_task_exception(task: asyncio.Task[object]) -> None:
