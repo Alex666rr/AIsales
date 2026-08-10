@@ -76,7 +76,13 @@ def test_built_wheel_imports_top_level_connector_outside_source_tree(tmp_path):
         [
             sys.executable,
             "-c",
-            "import telegram_connector as connector; print(connector.__file__); print(connector.SessionAdapter)",
+            (
+                "import telegram_connector as connector; "
+                "import app.main as api_main; "
+                "import app.modules.policy.service as policy_service; "
+                "print(connector.__file__); print(connector.SessionAdapter); "
+                "print(api_main.__file__); print(policy_service.__file__)"
+            ),
         ],
         check=True,
         capture_output=True,
@@ -85,6 +91,8 @@ def test_built_wheel_imports_top_level_connector_outside_source_tree(tmp_path):
         env=environment,
     )
 
-    connector_file, adapter_symbol = result.stdout.splitlines()
+    connector_file, adapter_symbol, api_file, policy_file = result.stdout.splitlines()
     assert Path(connector_file).resolve().is_relative_to(install_dir.resolve())
     assert "telegram_connector.adapters.base.SessionAdapter" in adapter_symbol
+    assert Path(api_file).resolve().is_relative_to(install_dir.resolve())
+    assert Path(policy_file).resolve().is_relative_to(install_dir.resolve())

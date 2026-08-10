@@ -131,6 +131,10 @@ class ApprovalRepository(Protocol):
     ) -> ApprovalRepositorySnapshot:
         """Return a candidate that matches every requested dimension at repository time."""
 
+
+class _ApprovalWriter(Protocol):
+    """Internal mutation dependency available only to the administration service."""
+
     async def create(self, request: ApprovalGrantRequest, approved_by: UUID) -> AiApprovalRecord:
         """Atomically append an approval and its audit event."""
 
@@ -139,7 +143,7 @@ class ApprovalRepository(Protocol):
 
 
 class SqlAlchemyApprovalRepository:
-    """Async PostgreSQL repository; unavailable or malformed state always raises safely."""
+    """Public read-only PostgreSQL approval query boundary."""
 
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._session_factory = session_factory
@@ -162,82 +166,6 @@ class SqlAlchemyApprovalRepository:
         except Exception as exc:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 raise
-            raise ApprovalRepositoryUnavailable("approval repository unavailable") from None
-
-    async def create(self, request: ApprovalGrantRequest, approved_by: UUID) -> AiApprovalRecord:
-        approval_id = uuid4()
-        event_id = uuid4()
-        try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    approved_at = (await session.execute(sa.select(sa.func.current_timestamp()))).scalar_one()
-                    if request.expires_at <= approved_at:
-                        raise ApprovalWriteRejected("approval expiry must be in the future")
-                    values = self._grant_values(
-                        request=request,
-                        approval_id=approval_id,
-                        approved_by=approved_by,
-                        approved_at=approved_at,
-                    )
-                    await session.execute(sa.insert(ai_approval_records).values(**values))
-                    await session.execute(
-                        sa.insert(ai_approval_audit_events).values(
-                            event_id=event_id,
-                            approval_id=approval_id,
-                            action="created",
-                            actor_id=approved_by,
-                            occurred_at=approved_at,
-                        )
-                    )
-            return AiApprovalRecord(**values, revoked_at=None)
-        except ApprovalWriteRejected:
-            raise
-        except (SQLAlchemyError, ValueError, TypeError):
-            raise ApprovalRepositoryUnavailable("approval repository unavailable") from None
-
-    async def revoke(self, approval_id: UUID, revoked_by: UUID) -> AiApprovalRecord:
-        try:
-            async with self._session_factory() as session:
-                async with session.begin():
-                    record_row = (
-                        await session.execute(
-                            sa.select(ai_approval_records)
-                            .where(ai_approval_records.c.approval_id == approval_id)
-                            .with_for_update()
-                        )
-                    ).mappings().one_or_none()
-                    if record_row is None:
-                        raise ApprovalWriteRejected("approval not found")
-                    existing = (
-                        await session.execute(
-                            sa.select(ai_approval_revocations.c.revoked_at).where(
-                                ai_approval_revocations.c.approval_id == approval_id
-                            )
-                        )
-                    ).scalar_one_or_none()
-                    if existing is not None:
-                        return self._record_from_mapping(record_row, revoked_at=existing)
-                    revoked_at = (await session.execute(sa.select(sa.func.current_timestamp()))).scalar_one()
-                    await session.execute(
-                        sa.insert(ai_approval_revocations).values(
-                            approval_id=approval_id,
-                            revoked_by=revoked_by,
-                            revoked_at=revoked_at,
-                        )
-                    )
-                    await session.execute(
-                        sa.insert(ai_approval_audit_events).values(
-                            event_id=uuid4(),
-                            approval_id=approval_id,
-                            action="revoked",
-                            actor_id=revoked_by,
-                            occurred_at=revoked_at,
-                        )
-                    )
-            return self._record_from_mapping(record_row, revoked_at=revoked_at)
-        except ApprovalWriteRejected:
-            raise
-        except (SQLAlchemyError, ValueError, TypeError):
             raise ApprovalRepositoryUnavailable("approval repository unavailable") from None
 
     @staticmethod
@@ -264,27 +192,6 @@ class SqlAlchemyApprovalRepository:
         )
 
     @staticmethod
-    def _grant_values(
-        *,
-        request: ApprovalGrantRequest,
-        approval_id: UUID,
-        approved_by: UUID,
-        approved_at: datetime,
-    ) -> dict[str, object]:
-        return {
-            "approval_id": approval_id,
-            "organization_id": request.organization_id,
-            "channel_types": sorted(item.value for item in request.channel_types),
-            "data_categories": sorted(item.value for item in request.data_categories),
-            "operations": sorted(item.value for item in request.operations),
-            "terms_revision": str(request.terms_revision),
-            "evidence_uri": request.evidence_uri,
-            "approved_by": approved_by,
-            "approved_at": approved_at,
-            "expires_at": request.expires_at,
-        }
-
-    @staticmethod
     def _record_from_mapping(mapping, *, revoked_at: datetime | None = None) -> AiApprovalRecord:
         if revoked_at is None:
             revoked_at = mapping.get("revoked_at")
@@ -300,4 +207,116 @@ class SqlAlchemyApprovalRepository:
             approved_at=mapping["approved_at"],
             expires_at=mapping["expires_at"],
             revoked_at=revoked_at,
+        )
+
+
+class _SqlAlchemyApprovalWriter:
+    """Private PostgreSQL mutation adapter used only behind trusted administration."""
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
+        self._session_factory = session_factory
+
+    async def create(self, request: ApprovalGrantRequest, approved_by: UUID) -> AiApprovalRecord:
+        approval_id = uuid4()
+        event_id = uuid4()
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    row = (
+                        await session.execute(
+                            self._grant_statement(
+                                request=request,
+                                approval_id=approval_id,
+                                event_id=event_id,
+                                actor_id=approved_by,
+                            )
+                        )
+                    ).mappings().one_or_none()
+                    if row is None:
+                        raise ApprovalWriteRejected("approval expiry must be in the future")
+            return SqlAlchemyApprovalRepository._record_from_mapping(row)
+        except ApprovalWriteRejected:
+            raise
+        except (SQLAlchemyError, ValueError, TypeError):
+            raise ApprovalRepositoryUnavailable("approval repository unavailable") from None
+
+    async def revoke(self, approval_id: UUID, revoked_by: UUID) -> AiApprovalRecord:
+        try:
+            async with self._session_factory() as session:
+                async with session.begin():
+                    row = (
+                        await session.execute(
+                            self._revoke_statement(
+                                approval_id=approval_id,
+                                event_id=uuid4(),
+                                actor_id=revoked_by,
+                            )
+                        )
+                    ).mappings().one_or_none()
+                    if row is None:
+                        raise ApprovalWriteRejected("approval not found")
+            return SqlAlchemyApprovalRepository._record_from_mapping(row)
+        except ApprovalWriteRejected:
+            raise
+        except (SQLAlchemyError, ValueError, TypeError):
+            raise ApprovalRepositoryUnavailable("approval repository unavailable") from None
+
+    @staticmethod
+    def _grant_statement(
+        *,
+        request: ApprovalGrantRequest,
+        approval_id: UUID,
+        event_id: UUID,
+        actor_id: UUID,
+    ) -> sa.sql.elements.TextClause:
+        return sa.text(
+            """
+            SELECT * FROM public.policy_grant_ai_approval(
+                :approval_id, :event_id, :organization_id, :channel_types,
+                :data_categories, :operations, :terms_revision,
+                :evidence_uri, :actor_id, :expires_at
+            )
+            """
+        ).bindparams(
+            sa.bindparam("approval_id", value=approval_id, type_=postgresql.UUID(as_uuid=True)),
+            sa.bindparam("event_id", value=event_id, type_=postgresql.UUID(as_uuid=True)),
+            sa.bindparam("organization_id", value=request.organization_id, type_=postgresql.UUID(as_uuid=True)),
+            sa.bindparam(
+                "channel_types",
+                value=sorted(item.value for item in request.channel_types),
+                type_=postgresql.ARRAY(sa.String(32)),
+            ),
+            sa.bindparam(
+                "data_categories",
+                value=sorted(item.value for item in request.data_categories),
+                type_=postgresql.ARRAY(sa.String(64)),
+            ),
+            sa.bindparam(
+                "operations",
+                value=sorted(item.value for item in request.operations),
+                type_=postgresql.ARRAY(sa.String(32)),
+            ),
+            sa.bindparam("terms_revision", value=str(request.terms_revision), type_=sa.String(128)),
+            sa.bindparam("evidence_uri", value=request.evidence_uri, type_=sa.String(2048)),
+            sa.bindparam("actor_id", value=actor_id, type_=postgresql.UUID(as_uuid=True)),
+            sa.bindparam("expires_at", value=request.expires_at, type_=sa.DateTime(timezone=True)),
+        )
+
+    @staticmethod
+    def _revoke_statement(
+        *,
+        approval_id: UUID,
+        event_id: UUID,
+        actor_id: UUID,
+    ) -> sa.sql.elements.TextClause:
+        return sa.text(
+            """
+            SELECT * FROM public.policy_revoke_ai_approval(
+                :approval_id, :event_id, :actor_id
+            )
+            """
+        ).bindparams(
+            sa.bindparam("approval_id", value=approval_id, type_=postgresql.UUID(as_uuid=True)),
+            sa.bindparam("event_id", value=event_id, type_=postgresql.UUID(as_uuid=True)),
+            sa.bindparam("actor_id", value=actor_id, type_=postgresql.UUID(as_uuid=True)),
         )

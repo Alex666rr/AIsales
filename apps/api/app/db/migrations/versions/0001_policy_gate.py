@@ -135,14 +135,185 @@ def upgrade() -> None:
             FOR EACH ROW EXECUTE FUNCTION deny_ai_approval_history_mutation()
             """
         )
+        op.execute(
+            f"""
+            CREATE TRIGGER {table_name}_truncate_immutable
+            BEFORE TRUNCATE ON {table_name}
+            FOR EACH STATEMENT EXECUTE FUNCTION deny_ai_approval_history_mutation()
+            """
+        )
+        op.execute(
+            f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {table_name} FROM PUBLIC"
+        )
+
+    # EXECUTE privilege on these functions is the database authorization
+    # boundary.  The actor UUID is audit metadata supplied only after the
+    # application has revalidated a server-issued platform-owner capability.
+    # This migration intentionally grants EXECUTE to no invented runtime role;
+    # deployment must grant it to the separately configured trusted writer.
+    op.execute(
+        """
+        CREATE FUNCTION public.policy_grant_ai_approval(
+            p_approval_id uuid,
+            p_event_id uuid,
+            p_organization_id uuid,
+            p_channel_types varchar[],
+            p_data_categories varchar[],
+            p_operations varchar[],
+            p_terms_revision varchar,
+            p_evidence_uri varchar,
+            p_actor_id uuid,
+            p_expires_at timestamptz
+        )
+        RETURNS TABLE (
+            approval_id uuid,
+            organization_id uuid,
+            channel_types varchar[],
+            data_categories varchar[],
+            operations varchar[],
+            terms_revision varchar,
+            evidence_uri varchar,
+            approved_by uuid,
+            approved_at timestamptz,
+            expires_at timestamptz,
+            revoked_at timestamptz
+        )
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = pg_catalog
+        AS $policy$
+        DECLARE
+            v_approved_at timestamptz := CURRENT_TIMESTAMP;
+        BEGIN
+            IF p_expires_at <= v_approved_at THEN
+                RETURN;
+            END IF;
+
+            INSERT INTO public.ai_approval_records (
+                approval_id, organization_id, channel_types, data_categories,
+                operations, terms_revision, evidence_uri, approved_by,
+                approved_at, expires_at
+            ) VALUES (
+                p_approval_id, p_organization_id, p_channel_types, p_data_categories,
+                p_operations, p_terms_revision, p_evidence_uri, p_actor_id,
+                v_approved_at, p_expires_at
+            );
+            INSERT INTO public.ai_approval_audit_events (
+                event_id, approval_id, action, actor_id, occurred_at
+            ) VALUES (
+                p_event_id, p_approval_id, 'created', p_actor_id, v_approved_at
+            );
+
+            RETURN QUERY
+            SELECT record.approval_id, record.organization_id, record.channel_types,
+                   record.data_categories, record.operations, record.terms_revision,
+                   record.evidence_uri, record.approved_by, record.approved_at,
+                   record.expires_at, NULL::timestamptz
+            FROM public.ai_approval_records AS record
+            WHERE record.approval_id = p_approval_id;
+        END;
+        $policy$
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION public.policy_revoke_ai_approval(
+            p_approval_id uuid,
+            p_event_id uuid,
+            p_actor_id uuid
+        )
+        RETURNS TABLE (
+            approval_id uuid,
+            organization_id uuid,
+            channel_types varchar[],
+            data_categories varchar[],
+            operations varchar[],
+            terms_revision varchar,
+            evidence_uri varchar,
+            approved_by uuid,
+            approved_at timestamptz,
+            expires_at timestamptz,
+            revoked_at timestamptz
+        )
+        LANGUAGE plpgsql
+        SECURITY DEFINER
+        SET search_path = pg_catalog
+        AS $policy$
+        DECLARE
+            v_revoked_at timestamptz;
+        BEGIN
+            PERFORM 1
+            FROM public.ai_approval_records AS record
+            WHERE record.approval_id = p_approval_id
+            FOR UPDATE;
+            IF NOT FOUND THEN
+                RETURN;
+            END IF;
+
+            INSERT INTO public.ai_approval_revocations AS revocation (
+                approval_id, revoked_by, revoked_at
+            ) VALUES (
+                p_approval_id, p_actor_id, CURRENT_TIMESTAMP
+            )
+            ON CONFLICT ON CONSTRAINT pk_ai_approval_revocations DO NOTHING
+            RETURNING revocation.revoked_at INTO v_revoked_at;
+
+            IF v_revoked_at IS NOT NULL THEN
+                INSERT INTO public.ai_approval_audit_events (
+                    event_id, approval_id, action, actor_id, occurred_at
+                ) VALUES (
+                    p_event_id, p_approval_id, 'revoked', p_actor_id, v_revoked_at
+                );
+            ELSE
+                SELECT revocation.revoked_at INTO v_revoked_at
+                FROM public.ai_approval_revocations AS revocation
+                WHERE revocation.approval_id = p_approval_id;
+            END IF;
+
+            RETURN QUERY
+            SELECT record.approval_id, record.organization_id, record.channel_types,
+                   record.data_categories, record.operations, record.terms_revision,
+                   record.evidence_uri, record.approved_by, record.approved_at,
+                   record.expires_at, v_revoked_at
+            FROM public.ai_approval_records AS record
+            WHERE record.approval_id = p_approval_id;
+        END;
+        $policy$
+        """
+    )
+    op.execute(
+        """
+        REVOKE ALL ON FUNCTION public.policy_grant_ai_approval(
+            uuid, uuid, uuid, varchar[], varchar[], varchar[], varchar, varchar, uuid, timestamptz
+        ) FROM PUBLIC
+        """
+    )
+    op.execute(
+        """
+        REVOKE ALL ON FUNCTION public.policy_revoke_ai_approval(uuid, uuid, uuid) FROM PUBLIC
+        """
+    )
 
 
 def downgrade() -> None:
+    op.execute(
+        """
+        DROP FUNCTION IF EXISTS public.policy_revoke_ai_approval(uuid, uuid, uuid)
+        """
+    )
+    op.execute(
+        """
+        DROP FUNCTION IF EXISTS public.policy_grant_ai_approval(
+            uuid, uuid, uuid, varchar[], varchar[], varchar[], varchar, varchar, uuid, timestamptz
+        )
+        """
+    )
     for table_name in (
         "ai_approval_audit_events",
         "ai_approval_revocations",
         "ai_approval_records",
     ):
+        op.execute(f"DROP TRIGGER IF EXISTS {table_name}_truncate_immutable ON {table_name}")
         op.execute(f"DROP TRIGGER IF EXISTS {table_name}_immutable ON {table_name}")
     op.execute("DROP FUNCTION IF EXISTS deny_ai_approval_history_mutation()")
     op.drop_index("ix_ai_approval_audit_events_approval_time", table_name="ai_approval_audit_events")

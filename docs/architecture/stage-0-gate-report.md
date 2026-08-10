@@ -6,9 +6,11 @@
 ## Technical findings
 
 - The connector's automated baseline completes without live network access; live Telegram tests remain opt-in and were not run for this gate.
-- The policy boundary accepts only content-free, server-issued metadata and uses closed channel, data-category, and operation vocabularies.
+- The policy boundary accepts only content-free, server-issued metadata and uses closed channel, data-category, and operation vocabularies. Server-side registries bind canonical claims to exact issued-object identity, so copied, forged, relabeled, or mutated capabilities deny.
 - Real Telegram decisions require an exact, current PostgreSQL approval match. Missing, expired, future, mismatched, revoked, malformed, or unavailable state denies.
-- Approval creation and revocation require a server-minted platform-owner capability. Grants, separate revocations, and audit events are append-only.
+- Approval creation and revocation require a server-minted platform-owner capability revalidated at mutation time. The public repository is read-only; private writes call PostgreSQL security-definer functions that atomically pair grants or revocations with audit events.
+- PostgreSQL row and statement triggers protect history from update, delete, and truncate; direct table mutation and function execution are revoked from `PUBLIC`. Deployment must configure a non-owner runtime role and explicitly grant only the needed reads and policy-function execution because this migration intentionally creates or grants no runtime role.
+- API request validation uses a fixed safe 422 response and does not serialize rejected input, including secret-bearing evidence URIs.
 - The protected-loader seam aborts before invoking the message-content loader on every denied decision.
 - Stage 0 adds no AI provider, model call, Redis dependency, or live-network policy test.
 

@@ -14,13 +14,17 @@ A real Telegram decision is allowed only when one immutable approval matches all
 - `approved_at <= current_timestamp < expires_at`; and
 - no row exists in `ai_approval_revocations`.
 
-Missing, malformed, stale, revoked, or unavailable repository state denies. Only explicitly server-issued synthetic input bypasses the Telegram approval lookup.
+Missing, malformed, stale, revoked, or unavailable repository state denies. Synthetic input can bypass the Telegram approval lookup only when the gate is explicitly composed with a separate trusted synthetic authority intended for a test harness. The production Telegram authority cannot issue or relabel synthetic input.
 
 ## Authority and history
 
-Approval administration requires an opaque `PlatformOwnerPrincipal` minted by the server's `PlatformOwnerAuthority`. Request bodies cannot claim a role. Creation appends the grant and a `created` audit event in one transaction. Revocation locks the grant and appends one separate revocation plus one `revoked` audit event in one transaction. Database triggers reject updates and deletes to all three history tables.
+Policy and owner capabilities are authorized by exact issued-object identity. The issuing authority retains immutable canonical claims server-side and revalidates both identity and every claim on every use. Copying fields, constructing a lookalike object, relabeling the origin, or mutating a frozen object does not confer authority. Request bodies cannot claim a role.
 
-The API returns only an approval UUID and a safe status. It does not return evidence, actor details, audit contents, or raw internal errors.
+The public approval repository exposes queries only. Approval administration is the mutation boundary and revalidates a `PlatformOwnerPrincipal` immediately before invoking its private database writer. Database functions pair each approval or revocation append with its audit event in one transaction; revocation also locks the approval row. Row triggers reject updates and deletes, statement triggers reject truncation, and the migration revokes direct table mutation plus function execution from `PUBLIC`.
+
+The database function's actor UUID is audit metadata, not an authorization claim. The migration deliberately creates no runtime role and grants no writer role. Deployment must use a separately configured, non-owner runtime role, grant it only the required reads and `EXECUTE` on the two policy write functions, and retain table ownership outside the application runtime. PostgreSQL owners and superusers remain trusted administrative boundaries.
+
+The API returns only an approval UUID and a safe status. It does not return evidence, actor details, audit contents, raw rejected validation input, or raw internal errors. Validation failures use a fixed safe 422 response.
 
 ## Approval decision template
 

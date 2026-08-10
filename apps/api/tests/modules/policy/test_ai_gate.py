@@ -3,23 +3,41 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 from datetime import UTC, datetime, timedelta
+from importlib import import_module
+from io import StringIO
 from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from fastapi import HTTPException
 from pydantic import ValidationError
+from sqlalchemy.dialects import postgresql
 
+from app.main import create_app
 from app.modules.policy.models import (
     AiApprovalRecord,
     AiOperation,
+    AiOperationContext,
     ApprovalGrantRequest,
     ChannelType,
+    ContentOrigin,
     DataCategory,
+    PlatformOwnerPrincipal,
     TermsRevision,
 )
-from app.modules.policy.repository import ApprovalRepositorySnapshot, ApprovalRepositoryUnavailable
+from app.modules.policy import service as policy_service
+from app.modules.policy import repository as policy_repository
+from app.modules.policy.repository import (
+    ApprovalRepository,
+    ApprovalRepositorySnapshot,
+    ApprovalRepositoryUnavailable,
+    SqlAlchemyApprovalRepository,
+)
 from app.modules.policy.routes import build_policy_router
 from app.modules.policy.service import (
     ApprovalAdministrationService,
@@ -43,6 +61,62 @@ def run(awaitable):
     return asyncio.run(awaitable)
 
 
+async def asgi_post_json(application, path: str, payload: dict[str, object]) -> tuple[int, bytes]:
+    """Invoke the real ASGI stack without optional HTTP client dependencies."""
+    body = json.dumps(payload).encode("utf-8")
+    request_sent = False
+    messages: list[dict[str, object]] = []
+
+    async def receive():
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+        "client": ("127.0.0.1", 1),
+        "server": ("testserver", 80),
+    }
+    await application(scope, receive, send)
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    response_body = b"".join(
+        message.get("body", b"")
+        for message in messages
+        if message["type"] == "http.response.body"
+    )
+    return start["status"], response_body
+
+
+def render_policy_migration(direction: str) -> str:
+    """Render migration behavior through Alembic's PostgreSQL offline operations."""
+    module = import_module("apps.api.app.db.migrations.versions.0001_policy_gate")
+    output = StringIO()
+    context = MigrationContext.configure(
+        url="postgresql://policy-test.invalid/prototype",
+        opts={"as_sql": True, "literal_binds": True, "output_buffer": output},
+    )
+    module.op = Operations(context)
+    getattr(module, direction)()
+    return output.getvalue()
+
+
 class RecordingApprovalRepository:
     """Content-free test repository with a repository-authoritative clock."""
 
@@ -50,14 +124,21 @@ class RecordingApprovalRepository:
         self.snapshot = ApprovalRepositorySnapshot(checked_at=checked_at, record=record)
         self.failure: Exception | None = None
         self.find_calls = 0
-        self.created: list[tuple[ApprovalGrantRequest, UUID]] = []
-        self.revoked: list[tuple[UUID, UUID]] = []
 
     async def find_matching(self, context, terms_revision):
         self.find_calls += 1
         if self.failure is not None:
             raise self.failure
         return self.snapshot
+
+
+
+class RecordingApprovalWriter:
+    """Test-only writer behind the owner-authorized administration boundary."""
+
+    def __init__(self) -> None:
+        self.created: list[tuple[ApprovalGrantRequest, UUID]] = []
+        self.revoked: list[tuple[UUID, UUID]] = []
 
     async def create(self, request: ApprovalGrantRequest, approved_by: UUID) -> AiApprovalRecord:
         self.created.append((request, approved_by))
@@ -255,6 +336,77 @@ def test_context_from_an_untrusted_issuer_is_denied_before_repository_access(con
     assert repository.find_calls == 0
 
 
+def test_context_and_principal_do_not_expose_copyable_issuer_tokens(context_authority, real_message_context):
+    """A readable token would let a caller mint a second authority-equivalent object."""
+    context = real_message_context()
+    principal = PlatformOwnerAuthority().issue(OWNER)
+
+    assert not hasattr(context, "_issuer_token")
+    assert not hasattr(principal, "_issuer_token")
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("organization_id", ORG_B),
+        ("channel_type", ChannelType.BOT_API),
+        ("data_category", DataCategory.MESSAGE_METADATA),
+        ("operation", AiOperation.CLASSIFY),
+        ("origin", ContentOrigin.SYNTHETIC),
+    ],
+)
+def test_object_setattr_retargeting_invalidates_issued_context(
+    field,
+    replacement,
+    context_authority,
+    real_message_context,
+):
+    """Canonical server claims must win over fields rewritten through object.__setattr__."""
+    context = real_message_context()
+    repository = RecordingApprovalRepository(make_record())
+    object.__setattr__(context, field, replacement)
+
+    decision = run(make_gate(repository, context_authority).evaluate(context))
+
+    assert decision.allowed is False
+    assert decision.reason_code == "context_untrusted"
+    assert repository.find_calls == 0
+
+
+def test_copy_of_valid_context_is_not_an_issued_context(context_authority, real_message_context):
+    """Copying all visible fields must not copy server-side issuance authority."""
+    copied = copy.copy(real_message_context())
+    repository = RecordingApprovalRepository(make_record())
+
+    decision = run(make_gate(repository, context_authority).evaluate(copied))
+
+    assert decision.allowed is False
+    assert decision.reason_code == "context_untrusted"
+    assert repository.find_calls == 0
+
+
+def test_constructed_context_with_copied_fields_is_not_issued(context_authority, real_message_context):
+    """Constructing an equal value object must not forge exact-object issuance."""
+    issued = real_message_context()
+    values = {
+        "organization_id": issued.organization_id,
+        "channel_type": issued.channel_type,
+        "data_category": issued.data_category,
+        "operation": issued.operation,
+        "origin": issued.origin,
+    }
+    if hasattr(issued, "_issuer_token"):
+        values["_issuer_token"] = issued._issuer_token
+    forged = AiOperationContext(**values)
+    repository = RecordingApprovalRepository(make_record())
+
+    decision = run(make_gate(repository, context_authority).evaluate(forged))
+
+    assert decision.allowed is False
+    assert decision.reason_code == "context_untrusted"
+    assert repository.find_calls == 0
+
+
 def test_server_issued_context_cannot_be_retargeted_after_issuance(context_authority, real_message_context):
     """Mutable organization or origin fields would let a valid capability be repurposed."""
     context = real_message_context()
@@ -287,20 +439,56 @@ def test_context_authority_rejects_arbitrary_strings(field, value, context_autho
         context_authority.real_telegram(**values)
 
 
-def test_synthetic_non_telegram_evaluation_is_allowed_without_repository_access(context_authority):
-    """Consulting Telegram approvals for explicitly server-issued synthetic input breaks the Stage 0 test seam."""
+def test_production_context_authority_cannot_issue_synthetic_context(context_authority):
+    """Production authority must not expose a synthetic relabeling path."""
+    assert not hasattr(context_authority, "synthetic")
+
+
+def test_explicit_trusted_synthetic_authority_can_issue_only_its_own_test_context(context_authority):
+    """The synthetic bypass belongs to an independently injected test-only authority instance."""
+    synthetic_authority_type = getattr(policy_service, "TrustedSyntheticPolicyAuthority", None)
+    assert synthetic_authority_type is not None
+    synthetic_authority = synthetic_authority_type()
     repository = RecordingApprovalRepository()
     repository.failure = AssertionError("repository must not be called")
-    context = context_authority.synthetic(
+    context = synthetic_authority.synthetic(
         organization_id=ORG_A,
         data_category=DataCategory.MESSAGE_TEXT,
         operation=AiOperation.SUMMARIZE,
     )
+    gate = PolicyGate(
+        repository=repository,
+        context_authority=context_authority,
+        trusted_synthetic_authority=synthetic_authority,
+        current_terms_revision=TERMS,
+    )
 
-    decision = run(make_gate(repository, context_authority).evaluate(context))
+    decision = run(gate.evaluate(context))
 
     assert decision.allowed is True
     assert decision.reason_code == "synthetic_non_telegram"
+    assert repository.find_calls == 0
+
+
+def test_real_context_relabelled_synthetic_is_denied_by_both_authorities(context_authority, real_message_context):
+    """A real-origin capability must not become synthetic by rewriting its visible origin."""
+    synthetic_authority_type = getattr(policy_service, "TrustedSyntheticPolicyAuthority", None)
+    assert synthetic_authority_type is not None
+    synthetic_authority = synthetic_authority_type()
+    repository = RecordingApprovalRepository(make_record())
+    context = real_message_context()
+    object.__setattr__(context, "origin", ContentOrigin.SYNTHETIC)
+    gate = PolicyGate(
+        repository=repository,
+        context_authority=context_authority,
+        trusted_synthetic_authority=synthetic_authority,
+        current_terms_revision=TERMS,
+    )
+
+    decision = run(gate.evaluate(context))
+
+    assert decision.allowed is False
+    assert decision.reason_code == "context_untrusted"
     assert repository.find_calls == 0
 
 
@@ -345,8 +533,8 @@ def test_guard_loads_only_after_an_allowed_decision(context_authority, real_mess
 def test_only_a_principal_issued_by_the_server_authority_can_create_approval():
     """Trusting a role field or a capability from another issuer would permit forged approvals."""
     authority = PlatformOwnerAuthority()
-    repository = RecordingApprovalRepository()
-    service = ApprovalAdministrationService(repository=repository, owner_authority=authority)
+    writer = RecordingApprovalWriter()
+    service = ApprovalAdministrationService(writer=writer, owner_authority=authority)
     request = make_grant_request()
 
     with pytest.raises(PolicyAuthorizationError):
@@ -357,7 +545,7 @@ def test_only_a_principal_issued_by_the_server_authority_can_create_approval():
     created = run(service.create(request, authority.issue(OWNER)))
 
     assert created.approved_by == OWNER
-    assert repository.created == [(request, OWNER)]
+    assert writer.created == [(request, OWNER)]
 
 
 def test_server_issued_owner_principal_cannot_change_actor_identity():
@@ -368,34 +556,95 @@ def test_server_issued_owner_principal_cannot_change_actor_identity():
         principal.principal_id = ORG_B
 
 
+@pytest.mark.parametrize("attack", ["mutate", "copy", "construct"])
+def test_owner_authority_revalidates_exact_issued_identity_before_create(attack):
+    """A copied, constructed, or rewritten owner object must not reach the writer."""
+    authority = PlatformOwnerAuthority()
+    issued = authority.issue(OWNER)
+    if attack == "mutate":
+        object.__setattr__(issued, "principal_id", ORG_B)
+        attacked = issued
+    elif attack == "copy":
+        attacked = copy.copy(issued)
+    else:
+        values = {"principal_id": issued.principal_id}
+        if hasattr(issued, "_issuer_token"):
+            values["_issuer_token"] = issued._issuer_token
+        attacked = PlatformOwnerPrincipal(**values)
+    writer = RecordingApprovalWriter()
+    service = ApprovalAdministrationService(writer=writer, owner_authority=authority)
+
+    with pytest.raises(PolicyAuthorizationError):
+        run(service.create(make_grant_request(), attacked))
+
+    assert writer.created == []
+
+
 def test_revocation_is_a_separate_owner_authorized_repository_action():
     """Mutating an approval directly would erase the immutable grant history."""
     authority = PlatformOwnerAuthority()
-    repository = RecordingApprovalRepository(make_record())
-    service = ApprovalAdministrationService(repository=repository, owner_authority=authority)
+    writer = RecordingApprovalWriter()
+    service = ApprovalAdministrationService(writer=writer, owner_authority=authority)
 
     revoked = run(service.revoke(APPROVAL_ID, authority.issue(OWNER)))
 
     assert revoked.approval_id == APPROVAL_ID
     assert revoked.revoked_at == NOW
-    assert repository.revoked == [(APPROVAL_ID, OWNER)]
+    assert writer.revoked == [(APPROVAL_ID, OWNER)]
+
+
+def test_public_approval_repository_contract_is_read_only():
+    """Public persistence must not let a caller append grants or revocations with raw UUIDs."""
+    assert "create" not in ApprovalRepository.__dict__
+    assert "revoke" not in ApprovalRepository.__dict__
+    assert not hasattr(SqlAlchemyApprovalRepository, "create")
+    assert not hasattr(SqlAlchemyApprovalRepository, "revoke")
+
+
+@pytest.mark.parametrize("untrusted", [OWNER, {"id": str(OWNER), "role": "platform_owner"}])
+def test_raw_uuid_or_role_claim_cannot_reach_approval_writer(untrusted):
+    """Only a currently revalidated principal object may append grant/audit history."""
+    writer = RecordingApprovalWriter()
+    service = ApprovalAdministrationService(writer=writer, owner_authority=PlatformOwnerAuthority())
+
+    with pytest.raises(PolicyAuthorizationError):
+        run(service.create(make_grant_request(), untrusted))
+
+    assert writer.created == []
+    assert writer.revoked == []
+
+
+def test_model_constructed_malformed_approval_fails_closed(context_authority, real_message_context):
+    """Pydantic model_construct must not bypass full row revalidation or escape as AttributeError."""
+    malformed = AiApprovalRecord.model_construct(
+        approval_id=APPROVAL_ID,
+        organization_id=ORG_A,
+        channel_types=frozenset({ChannelType.MTPROTO_USER}),
+    )
+    repository = RecordingApprovalRepository()
+    repository.snapshot = ApprovalRepositorySnapshot(checked_at=NOW, record=malformed)
+
+    decision = run(make_gate(repository, context_authority).evaluate(real_message_context()))
+
+    assert decision.allowed is False
+    assert decision.reason_code == "approval_unavailable"
 
 
 def test_routes_have_no_role_field_and_fail_closed_on_repository_errors():
     """Mapping internal write failures to raw responses would expose audit/database details."""
     authority = PlatformOwnerAuthority()
-    repository = RecordingApprovalRepository()
-    repository.failure = ApprovalRepositoryUnavailable("dsn contains secret")
+    writer = RecordingApprovalWriter()
+    failure = ApprovalRepositoryUnavailable("dsn contains secret")
 
     class FailingAdministrationService(ApprovalAdministrationService):
         async def create(self, request, principal):
-            raise repository.failure
+            raise failure
 
     async def trusted_principal():
         return authority.issue(OWNER)
 
     router = build_policy_router(
-        FailingAdministrationService(repository=repository, owner_authority=authority),
+        FailingAdministrationService(writer=writer, owner_authority=authority),
         principal_dependency=trusted_principal,
     )
     payload = {
@@ -420,3 +669,105 @@ def test_routes_have_no_role_field_and_fail_closed_on_repository_errors():
 
     assert failure.value.status_code == 503
     assert failure.value.detail == "approval operation unavailable"
+
+
+def test_asgi_validation_response_never_echoes_rejected_evidence_uri_or_secret(caplog):
+    """Default 422 details must not echo rejected request input or leak it through handler logs."""
+    authority = PlatformOwnerAuthority()
+
+    async def trusted_principal():
+        return authority.issue(OWNER)
+
+    application = create_app()
+    application.include_router(
+        build_policy_router(
+            ApprovalAdministrationService(writer=RecordingApprovalWriter(), owner_authority=authority),
+            principal_dependency=trusted_principal,
+        )
+    )
+    payload = {
+        "organization_id": str(ORG_A),
+        "channel_types": ["mtproto_user"],
+        "data_categories": ["message_text"],
+        "operations": ["summarize"],
+        "terms_revision": str(TERMS),
+        "evidence_uri": "https://evidence.invalid/approval?access_token=TOP-SECRET",
+        "expires_at": (NOW + timedelta(days=1)).isoformat(),
+    }
+
+    status_code, response_body = run(asgi_post_json(application, "/policy/ai-approvals", payload))
+
+    assert status_code == 422
+    assert json.loads(response_body) == {"detail": "request validation failed"}
+    assert b"TOP-SECRET" not in response_body
+    assert "TOP-SECRET" not in caplog.text
+
+
+def test_policy_migration_blocks_truncate_and_public_direct_mutations():
+    """Row immutability alone must not allow truncate or direct runtime-history writes."""
+    sql = render_policy_migration("upgrade")
+
+    for table_name in (
+        "ai_approval_records",
+        "ai_approval_revocations",
+        "ai_approval_audit_events",
+    ):
+        assert f"BEFORE TRUNCATE ON {table_name}" in sql
+        assert f"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON TABLE {table_name} FROM PUBLIC" in sql
+
+
+def test_policy_migration_pairs_history_writes_in_privilege_gated_functions():
+    """The only grant/revoke entrypoints must pair domain history with its audit event."""
+    sql = render_policy_migration("upgrade")
+    grant_function = sql[sql.index("CREATE FUNCTION public.policy_grant_ai_approval"):]
+    grant_function = grant_function[:grant_function.index("CREATE FUNCTION public.policy_revoke_ai_approval")]
+    revoke_function = sql[sql.index("CREATE FUNCTION public.policy_revoke_ai_approval"):]
+
+    assert "SECURITY DEFINER" in grant_function
+    assert "SET search_path = pg_catalog" in grant_function
+    assert "INSERT INTO public.ai_approval_records" in grant_function
+    assert "INSERT INTO public.ai_approval_audit_events" in grant_function
+    assert "SECURITY DEFINER" in revoke_function
+    assert "INSERT INTO public.ai_approval_revocations" in revoke_function
+    assert "ON CONFLICT ON CONSTRAINT pk_ai_approval_revocations DO NOTHING" in revoke_function
+    assert "INSERT INTO public.ai_approval_audit_events" in revoke_function
+    assert "REVOKE ALL ON FUNCTION public.policy_grant_ai_approval" in sql
+    assert "REVOKE ALL ON FUNCTION public.policy_revoke_ai_approval" in sql
+    assert " GRANT " not in sql
+
+
+def test_private_writer_builds_only_db_controlled_grant_and_revoke_calls():
+    """Application writer code must not regain a direct table-insert bypass."""
+    writer_type = getattr(policy_repository, "_SqlAlchemyApprovalWriter")
+    grant = writer_type._grant_statement(
+        request=make_grant_request(),
+        approval_id=APPROVAL_ID,
+        event_id=UUID("40000000-0000-0000-0000-000000000001"),
+        actor_id=OWNER,
+    )
+    revoke = writer_type._revoke_statement(
+        approval_id=APPROVAL_ID,
+        event_id=UUID("40000000-0000-0000-0000-000000000002"),
+        actor_id=OWNER,
+    )
+    grant_sql = str(grant.compile(dialect=postgresql.dialect()))
+    revoke_sql = str(revoke.compile(dialect=postgresql.dialect()))
+
+    assert "policy_grant_ai_approval" in grant_sql
+    assert "policy_revoke_ai_approval" in revoke_sql
+    assert "INSERT" not in grant_sql.upper()
+    assert "INSERT" not in revoke_sql.upper()
+
+
+def test_policy_migration_security_objects_are_reversible():
+    """Downgrade must remove both trigger classes and both controlled write functions."""
+    sql = render_policy_migration("downgrade")
+
+    assert "DROP FUNCTION IF EXISTS public.policy_grant_ai_approval" in sql
+    assert "DROP FUNCTION IF EXISTS public.policy_revoke_ai_approval" in sql
+    for table_name in (
+        "ai_approval_records",
+        "ai_approval_revocations",
+        "ai_approval_audit_events",
+    ):
+        assert f"DROP TRIGGER IF EXISTS {table_name}_truncate_immutable ON {table_name}" in sql

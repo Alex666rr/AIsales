@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
@@ -61,11 +61,10 @@ class TermsRevision(str):
         return core_schema.no_info_after_validator_function(cls, core_schema.str_schema())
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class AiOperationContext:
     """Opaque, issuer-bound metadata; it deliberately cannot carry message content."""
 
-    _issuer_token: object = field(repr=False)
     organization_id: UUID
     channel_type: ChannelType | None
     data_category: DataCategory
@@ -80,11 +79,10 @@ class AiOperationContext:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, weakref_slot=True)
 class PlatformOwnerPrincipal:
     """Opaque server-minted capability, never a caller-provided role claim."""
 
-    _issuer_token: object = field(repr=False)
     principal_id: UUID
 
     def __repr__(self) -> str:

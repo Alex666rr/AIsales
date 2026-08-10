@@ -27,9 +27,10 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["services/telegram_connector/tests"]
-pythonpath = ["."]
+testpaths = ["services/telegram_connector/tests", "apps/api/tests"]
+pythonpath = ["services", "apps/api", "."]
 
-[tool.setuptools]
-package-dir = {"" = "services"}
-packages = ["telegram_connector", "telegram_connector.adapters", "telegram_connector.runtime"]
+[tool.setuptools.packages.find]
+where = ["services", "apps/api"]
+include = ["telegram_connector*", "app*"]
+namespaces = true
