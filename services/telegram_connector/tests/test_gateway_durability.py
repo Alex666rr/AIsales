@@ -12,6 +12,7 @@ from sqlalchemy.orm import sessionmaker
 
 from telegram_connector import (
     CompatibilityRegistry,
+    ApprovedAdapterRegistry,
     InMemoryMessageDeliveryRepository,
     MessageCommand,
     SqlAlchemyCompatibilityRegistry,
@@ -132,6 +133,7 @@ def test_cancelled_network_effect_is_persisted_uncertain_before_restart_reconcil
         service = TelegramGateway(
             client=client, repository=repository, compatibility=CompatibilityRegistry(),
             adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
+            remote_deduplication=ApprovedAdapterRegistry(frozenset({("synthetic", "1")})).bind_remote_deduplication(client=client, adapter="synthetic", adapter_version="1"),
         )
         sending = asyncio.create_task(service.send(command()))
         await entered.wait()
@@ -170,7 +172,7 @@ def test_trusted_entity_update_rejects_spoofed_public_label_object():
         client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(),
         adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
     )
-    trusted = service.inbound_decoder().private_user(
+    trusted = service._decoder.private_user(
         update_id=7, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 10, tzinfo=UTC)
     )
     assert service.normalize_incoming(trusted) is not None
@@ -244,6 +246,7 @@ def test_delayed_first_send_and_replacement_key_produce_one_remote_effect_after_
         service = TelegramGateway(
             client=client, repository=repository, compatibility=CompatibilityRegistry(),
             adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True,
+            remote_deduplication=ApprovedAdapterRegistry(frozenset({("synthetic", "1")})).bind_remote_deduplication(client=client, adapter="synthetic", adapter_version="1"),
         )
         result = await service.send(command())
         assert result.external_message_id == "remote-once"
@@ -256,7 +259,7 @@ def test_inbound_capability_is_bound_to_issuing_gateway_and_rejects_forgery():
     """A caller-constructible inbound model allows forged private-user provenance."""
     one = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True)
     two = TelegramGateway(client=Client(), repository=InMemoryMessageDeliveryRepository(), compatibility=CompatibilityRegistry(), adapter="synthetic", adapter_version="1", proxy_id=None, connection_is_active=lambda: True)
-    capability = one.inbound_decoder().private_user(update_id=3, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 10, tzinfo=UTC))
+    capability = one._decoder.private_user(update_id=3, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 10, tzinfo=UTC))
     assert one.normalize_incoming(capability) is not None
     assert two.normalize_incoming(capability) is None
     forged = capability.__class__(object(), 3, 42, 42, datetime(2026, 8, 10, tzinfo=UTC))

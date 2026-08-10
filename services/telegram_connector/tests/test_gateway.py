@@ -8,6 +8,7 @@ import pytest
 
 from telegram_connector import (
     CompatibilityRegistry,
+    ApprovedAdapterRegistry,
     InMemoryMessageDeliveryRepository,
     MessageCommand,
     TelegramGateway,
@@ -52,14 +53,16 @@ def command(*, idempotency_key: str = "fixed-key") -> MessageCommand:
 
 
 def gateway(client: SyntheticClient | None = None, repository=None) -> TelegramGateway:
+    selected = client or SyntheticClient()
     return TelegramGateway(
-        client=client or SyntheticClient(),
+        client=selected,
         repository=repository or InMemoryMessageDeliveryRepository(),
         compatibility=CompatibilityRegistry(),
         adapter="synthetic",
         adapter_version="1.0",
         proxy_id=UUID(int=20),
         connection_is_active=lambda: True,
+        remote_deduplication=ApprovedAdapterRegistry(frozenset({("synthetic", "1.0")})).bind_remote_deduplication(client=selected, adapter="synthetic", adapter_version="1.0"),
     )
 
 
@@ -170,7 +173,7 @@ def test_incoming_normalizes_private_user_metadata_without_exposing_raw_text():
     """Including Telegram text in a normalized update would expose content to later paths."""
     service = gateway()
     update = service.normalize_incoming(
-        service.inbound_decoder().private_user(update_id=9, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 7, tzinfo=UTC))
+        service._decoder.private_user(update_id=9, sender_id=42, peer_id=42, received_at=datetime(2026, 8, 7, tzinfo=UTC))
     )
 
     assert update is not None

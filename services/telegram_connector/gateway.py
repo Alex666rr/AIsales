@@ -99,6 +99,26 @@ class OutboundTelegramClient(Protocol):
         """Find a previous remote send without exposing message text."""
 
 
+class ApprovedAdapterRegistry:
+    """Composition-root allow-list that alone issues remote-deduplication authority."""
+
+    def __init__(self, approved: frozenset[tuple[str, str]]) -> None:
+        self._approved = approved
+        self._issuer = object()
+
+    def bind_remote_deduplication(self, *, client: OutboundTelegramClient, adapter: str, adapter_version: str) -> object:
+        if (adapter, adapter_version) not in self._approved:
+            raise ValueError("adapter/version lacks approved remote idempotency")
+        return _RemoteDeduplicationCapability(self._issuer, client, adapter, adapter_version)
+
+
+class _RemoteDeduplicationCapability:
+    __slots__ = ("issuer", "client", "adapter", "adapter_version")
+
+    def __init__(self, issuer: object, client: OutboundTelegramClient, adapter: str, adapter_version: str) -> None:
+        self.issuer, self.client, self.adapter, self.adapter_version = issuer, client, adapter, adapter_version
+
+
 DeliveryState = Literal["pending", "uncertain", "completed"]
 ReservationAction = Literal["send", "wait", "reconcile", "completed"]
 
@@ -172,6 +192,10 @@ class InMemoryMessageDeliveryRepository:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._lease_seconds = lease_seconds
         self._owner_id = uuid4()
+
+    @property
+    def lease_seconds(self) -> float:
+        return self._lease_seconds
 
     async def reserve(self, command: MessageCommand) -> DeliveryReservation:
         key = self._key(command)
@@ -280,10 +304,14 @@ class TelegramGateway:
         adapter_version: str,
         proxy_id: UUID | None,
         connection_is_active: Callable[[], bool],
-        outbound_deadline_seconds: float = 20.0,
-        lease_renew_seconds: float = 5.0,
+        remote_deduplication: object | None = None,
+        outbound_deadline_seconds: float | None = None,
+        lease_renew_seconds: float | None = None,
     ) -> None:
-        if outbound_deadline_seconds <= 0 or lease_renew_seconds <= 0 or outbound_deadline_seconds <= lease_renew_seconds:
+        lease = getattr(repository, "lease_seconds", 30.0)
+        outbound_deadline_seconds = outbound_deadline_seconds or lease * 0.75
+        lease_renew_seconds = lease_renew_seconds or lease * 0.25
+        if outbound_deadline_seconds <= 0 or lease_renew_seconds <= 0 or lease_renew_seconds * 2 >= lease or outbound_deadline_seconds >= lease:
             raise ValueError("invalid outbound lease timing")
         self._client = client
         self._repository = repository
@@ -296,9 +324,7 @@ class TelegramGateway:
         self._lease_renew_seconds = lease_renew_seconds
         self._inbound_issuer = object()
         self._decoder = _InboundDecoder(self._inbound_issuer)
-
-    def inbound_decoder(self) -> object:
-        return self._decoder
+        self._remote_deduplication = remote_deduplication
 
     async def send(self, command: MessageCommand) -> DeliveryResult:
         """Return one durable result; ambiguous sends always reconcile before a later resend."""
@@ -318,7 +344,7 @@ class TelegramGateway:
                 reconciled = await self._reconcile(command, reservation)
                 if reconciled is not None:
                     return reconciled
-                if not getattr(self._client, "remote_idempotency_guaranteed", False):
+                if not self._has_approved_remote_deduplication():
                     self._record("telegram_unknown")
                     raise TelegramGatewayError("telegram_unknown")
                 reservation = await self._repository.allow_resend_after_reconcile_miss(command, reservation)
@@ -420,6 +446,10 @@ class TelegramGateway:
             proxy=self._proxy_id,
             outcome=outcome,
         )
+
+    def _has_approved_remote_deduplication(self) -> bool:
+        capability = self._remote_deduplication
+        return isinstance(capability, _RemoteDeduplicationCapability) and capability.client is self._client and capability.adapter == self._adapter and capability.adapter_version == self._adapter_version
 
 
 def _consume_task_exception(task: asyncio.Task[object]) -> None:

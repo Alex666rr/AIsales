@@ -75,6 +75,10 @@ class SqlAlchemyMessageDeliveryRepository:
         self._wait_seconds = wait_seconds
         self._owner_id = owner_id or uuid4()
 
+    @property
+    def lease_seconds(self) -> float:
+        return self._lease_seconds
+
     async def reserve(self, command: MessageCommand) -> DeliveryReservation:
         """Atomically create or lock one row; expired pending rows become uncertain, never sendable."""
         for _ in range(2):
