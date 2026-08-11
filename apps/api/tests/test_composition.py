@@ -177,7 +177,14 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
     try:
         application = create_app(composition=composition)
         paths = set(application.openapi()["paths"])
-        assert {"/healthz", "/policy/ai-approvals", "/policy/ai-approvals/{approval_id}/revocations"} <= paths
+        assert {
+            "/healthz",
+            "/policy/ai-approvals",
+            "/policy/ai-approvals/{approval_id}/revocations",
+            "/telegram/connections/phone/start",
+            "/telegram/connections/{attempt_id}/phone/confirm",
+            "/telegram/connections/{attempt_id}/phone/password",
+        } <= paths
         assert composition.adapter_registry.names == (
             "phone", "qr", "tdata", "telethon_file", "telethon_string", "bot"
         )
@@ -203,6 +210,16 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         )
         assert status == 401
         assert b"test-owner-token" not in body
+
+        status, body = asyncio.run(
+            asgi_post_json(
+                application,
+                "/telegram/connections/phone/start",
+                {"phone": "+12025550123"},
+            )
+        )
+        assert status == 401
+        assert b"+12025550123" not in body
     finally:
         engine.dispose()
 

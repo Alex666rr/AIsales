@@ -130,6 +130,14 @@ class TelethonPhoneAuthorizationClient:
         identity = await self._client.sign_in(password=password)
         return _identity(identity)
 
+    async def export_session(self) -> bytes:
+        try:
+            from telethon.sessions import StringSession
+
+            return _canonical_session(StringSession.save(self._client.session))
+        except Exception:
+            raise RuntimeError("telegram authorization unavailable") from None
+
 
 class TelethonQrAuthorizationClient:
     def __init__(self, client: object) -> None:

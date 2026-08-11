@@ -48,6 +48,7 @@ def create_app(*, composition=None) -> FastAPI:
 
     if composition is not None:
         api.include_router(composition.policy_router)
+        api.include_router(composition.connection_router)
         api.state.composition = composition
 
     return api

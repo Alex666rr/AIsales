@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hmac
 from dataclasses import dataclass
-from typing import Annotated, Callable
+from typing import Annotated, Callable, cast
 from uuid import UUID
 
 from fastapi import Header, HTTPException, status
@@ -61,6 +61,12 @@ from .modules.policy.service import (
     PolicyContextAuthority,
     PolicyGate,
     PolicyProtectedMessageLoader,
+)
+from .modules.telegram_connections.routes import build_connection_router
+from .modules.telegram_connections.service import (
+    ConnectionAttemptService,
+    PhoneAttemptAdapter,
+    QrAttemptAdapter,
 )
 
 
@@ -172,6 +178,7 @@ class ApplicationComposition:
     policy_gate: PolicyGate
     protected_message_loader: PolicyProtectedMessageLoader
     policy_router: object
+    connection_router: object
     sync_engine: Engine | None = None
     async_engine: AsyncEngine | None = None
 
@@ -262,6 +269,14 @@ def build_application_composition(
         administration,
         principal_dependency=authenticator,
     )
+    connection_attempts = ConnectionAttemptService(
+        phone=cast(PhoneAttemptAdapter, adapter_registry.get("phone")),
+        qr=cast(QrAttemptAdapter, adapter_registry.get("qr")),
+    )
+    connection_router = build_connection_router(
+        connection_attempts,
+        principal_dependency=authenticator,
+    )
     return ApplicationComposition(
         account_repository=account_repository,
         session_store=session_store,
@@ -278,6 +293,7 @@ def build_application_composition(
         policy_gate=policy_gate,
         protected_message_loader=protected_loader,
         policy_router=policy_router,
+        connection_router=connection_router,
         sync_engine=sync_engine,
         async_engine=async_engine,
     )

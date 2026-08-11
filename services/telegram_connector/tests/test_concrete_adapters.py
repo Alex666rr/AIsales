@@ -12,6 +12,7 @@ from telegram_connector.adapters.bot import BotAdapter
 from telegram_connector.adapters.concrete import (
     DefaultDenyTDataConverter,
     TelegramBotApiClient,
+    TelethonPhoneAuthorizationClient,
     TelethonRuntimeClientFactory,
     VettedTelethonSessionConverter,
 )
@@ -28,6 +29,27 @@ class RecordingCodec:
     def sqlite_to_string(self, path) -> str:
         assert path.read_bytes().startswith(b"SQLite format 3\x00")
         return "canonical-file-session"
+
+
+def test_phone_authorization_client_exports_only_canonical_session_bytes(monkeypatch):
+    """The interactive client must not expose a reusable client object or raw session object."""
+
+    class FakeStringSession:
+        @staticmethod
+        def save(session) -> str:
+            assert session == "in-memory-session"
+            return "canonical-owned-session"
+
+    sessions = ModuleType("telethon.sessions")
+    sessions.StringSession = FakeStringSession
+    monkeypatch.setitem(sys.modules, "telethon.sessions", sessions)
+
+    class FakeClient:
+        session = "in-memory-session"
+
+    payload = asyncio.run(TelethonPhoneAuthorizationClient(FakeClient()).export_session())
+
+    assert payload == b"TELETHON_STRING_SESSION\x00\x01canonical-owned-session"
 
 
 def test_vetted_converter_normalizes_string_and_sqlite_sessions_without_network():

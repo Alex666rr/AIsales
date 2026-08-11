@@ -61,6 +61,9 @@ class FakeUserClient:
             raise InvalidCode(f"bad password {password}")
         return (41, "alice")
 
+    async def export_session(self) -> bytes:
+        return b"TELETHON_STRING_SESSION\x00\x01one-time-session"
+
     async def request_qr(self) -> str:
         return "qr-login-token"
 
@@ -137,6 +140,22 @@ def test_phone_code_flow_authorizes_without_returning_phone_code_or_client_secre
     assert "+15551234567" not in repr(result)
     assert "12345" not in repr(result)
     assert "raw-server-code-hash" not in repr(result)
+
+
+def test_phone_authorization_allows_one_owner_bound_internal_session_claim():
+    """A completed phone challenge must yield its session once without making it public state."""
+    adapter = PhoneAdapter(lambda: FakeUserClient())
+    start = run(adapter.start("+15551234567", OWNER_A))
+    assert run(adapter.submit_code(start.challenge_id, OWNER_A, "12345")).state == "authorized"
+
+    identity, payload = run(adapter.consume_authorized_session(start.challenge_id, OWNER_A))
+
+    assert identity == 41
+    assert payload == b"TELETHON_STRING_SESSION\x00\x01one-time-session"
+    with pytest.raises(ValueError, match="^authorized session unavailable$"):
+        run(adapter.consume_authorized_session(start.challenge_id, OWNER_A))
+    with pytest.raises(ValueError, match="^authorized session unavailable$"):
+        run(adapter.consume_authorized_session(start.challenge_id, OWNER_B))
 
 
 def test_phone_invalid_code_is_a_safe_failed_state_without_exception_detail():
