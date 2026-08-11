@@ -56,6 +56,10 @@ connection. It builds the owner URL only for the Alembic command, runs
 `alembic -c /workspace/alembic.ini upgrade head`, and exits successfully when
 the migration succeeds. Do not configure a restart loop for this service.
 
+The repository's `Railway migrations image contract` GitHub Actions workflow
+runs the Docker build/runtime contract on every pull request and push. Local
+test runs skip that check only when Docker is unavailable.
+
 ## AIsales
 
 Create a repository-backed API service named `AIsales`. In Railway Build

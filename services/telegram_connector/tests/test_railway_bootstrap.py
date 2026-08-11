@@ -118,3 +118,20 @@ def test_built_migrations_image_contains_bootstrap_script_and_psql(tmp_path):
                 capture_output=True,
                 text=True,
             )
+
+
+def test_ci_requires_the_docker_migrations_image_contract():
+    """A local Docker skip must not let pull requests bypass the image contract."""
+    workflow_path = PROJECT_ROOT / ".github" / "workflows" / "railway-migrations-image.yml"
+    assert workflow_path.exists(), "Docker image contract workflow is missing"
+
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert "pull_request:" in workflow
+    assert "push:" in workflow
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "actions/setup-python@" in workflow
+    assert 'pip install ".[test]"' in workflow
+    assert (
+        "services/telegram_connector/tests/test_railway_bootstrap.py::"
+        "test_built_migrations_image_contains_bootstrap_script_and_psql"
+    ) in workflow

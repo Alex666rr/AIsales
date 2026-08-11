@@ -110,3 +110,26 @@ runs the image contract; it does not require secrets or a PostgreSQL service.
 
 Full-suite verification used `pytest -q --basetemp .pytest-tmp\task2-fix2-full`
 and returned `226 passed, 4 skipped in 5.23s`.
+
+## Fix round 3 evidence
+
+Added `test_ci_requires_the_docker_migrations_image_contract` before adding
+the workflow. Its RED run failed as intended with `AssertionError: Docker
+image contract workflow is missing`.
+
+Added `.github/workflows/railway-migrations-image.yml`. On every pull request
+and push it uses `ubuntu-latest`, installs the project test extra, and runs
+the exact Docker build/runtime contract test. This makes the test non-optional
+in a Docker-capable environment without needing database credentials or a
+running database. The deployment guide now documents that CI enforcement.
+
+GREEN verification:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q -rs --basetemp .pytest-tmp\task2-fix3-green
+```
+
+Result: `5 passed, 1 skipped in 0.35s`; the skip is explicitly `Docker is not
+installed`. The full suite returned `227 passed, 4 skipped in 5.26s`. The
+workflow itself cannot run locally, but it targets GitHub's
+Docker-capable `ubuntu-latest` runner.
