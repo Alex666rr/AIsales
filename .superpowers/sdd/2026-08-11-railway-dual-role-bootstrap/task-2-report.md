@@ -79,3 +79,34 @@ Results: targeted contract test `3 passed in 0.34s`; full relevant suite
 `225 passed, 3 skipped in 5.28s`; compileall exited 0; and `git diff --check`
 exited 0. Docker is not installed in this execution environment, so an image
 build could not be run here.
+
+## Fix round 2 evidence
+
+Added two tests before updating the guide: one requires both repository-backed
+services to select `infra/Dockerfile` through `RAILWAY_DOCKERFILE_PATH`; the
+other is an opt-in Docker build and runtime contract. The latter builds the
+image without database credentials or a database connection, then verifies
+that `/workspace/infra/postgres/railway/bootstrap_roles.sh` and `psql` exist.
+
+RED command:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q --basetemp .pytest-tmp\task2-fix2-red
+```
+
+Result: `1 failed, 3 passed, 1 skipped`. The new documented-build-settings
+test failed as intended because neither service declared
+`RAILWAY_DOCKERFILE_PATH`.
+
+GREEN command:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q -rs --basetemp .pytest-tmp\task2-fix2-skip
+```
+
+Result: `4 passed, 1 skipped in 0.35s`. The skip is explicit:
+`Docker is not installed`. When Docker is present, the same test builds and
+runs the image contract; it does not require secrets or a PostgreSQL service.
+
+Full-suite verification used `pytest -q --basetemp .pytest-tmp\task2-fix2-full`
+and returned `226 passed, 4 skipped in 5.23s`.

@@ -1,4 +1,8 @@
+import shutil
+import subprocess
 from pathlib import Path
+
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -55,3 +59,62 @@ def test_migrations_image_includes_bootstrap_dependencies_and_uses_sh():
     assert "postgresql-client" in dockerfile
     assert "COPY infra/postgres/railway ./infra/postgres/railway" in dockerfile
     assert "sh /workspace/infra/postgres/railway/bootstrap_roles.sh" in guide
+
+
+def test_guide_selects_the_infra_dockerfile_for_each_repository_service():
+    """Without an explicit Dockerfile path, Railway would not find this image definition."""
+    guide = (PROJECT_ROOT / "docs" / "deployment" / "railway-stage-0.md").read_text(
+        encoding="utf-8"
+    )
+    migrations_section = guide.split("## Migrations", maxsplit=1)[1].split("## AIsales", maxsplit=1)[0]
+    api_section = guide.split("## AIsales", maxsplit=1)[1]
+
+    for section in (migrations_section, api_section):
+        assert "| `RAILWAY_DOCKERFILE_PATH` | `infra/Dockerfile` |" in section
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker is not installed")
+def test_built_migrations_image_contains_bootstrap_script_and_psql(tmp_path):
+    """A Docker build must retain the bootstrap inputs needed before any database connection."""
+    image_id_path = tmp_path / "image-id"
+    image_id = None
+
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "build",
+                "--iidfile",
+                str(image_id_path),
+                "--file",
+                "infra/Dockerfile",
+                ".",
+            ],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        image_id = image_id_path.read_text(encoding="utf-8").strip()
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                image_id,
+                "sh",
+                "-ec",
+                "test -f /workspace/infra/postgres/railway/bootstrap_roles.sh; command -v psql",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        if image_id:
+            subprocess.run(
+                ["docker", "image", "rm", "--force", image_id],
+                check=False,
+                capture_output=True,
+                text=True,
+            )

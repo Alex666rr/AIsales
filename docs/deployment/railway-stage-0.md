@@ -26,8 +26,10 @@ not a long-running API. The repository Dockerfile includes
 `/workspace/infra/postgres/railway/bootstrap_roles.sh` and the PostgreSQL
 `psql` client needed by the start command below.
 
-Set these service variables. Mark the passwords sealed. The Postgres values
-are Railway references, not copied credentials.
+In Railway Build Configuration, leave Root Directory at its default `/` and
+set `RAILWAY_DOCKERFILE_PATH` to `infra/Dockerfile`; this repository has no
+root-level Dockerfile. Set these service variables. Mark the passwords sealed.
+The Postgres values are Railway references, not copied credentials.
 
 | Variable | Railway value |
 | --- | --- |
@@ -36,6 +38,7 @@ are Railway references, not copied credentials.
 | `PGDATABASE` | `${{Postgres.PGDATABASE}}` |
 | `PGUSER` | `${{Postgres.PGUSER}}` |
 | `PGPASSWORD` | `${{Postgres.PGPASSWORD}}` |
+| `RAILWAY_DOCKERFILE_PATH` | `infra/Dockerfile` |
 | `POSTGRES_OWNER_PASSWORD` | Enter a fresh URL-safe password in this service only. |
 | `POSTGRES_RUNTIME_PASSWORD` | `${{shared.POSTGRES_RUNTIME_PASSWORD}}` |
 
@@ -55,8 +58,11 @@ the migration succeeds. Do not configure a restart loop for this service.
 
 ## AIsales
 
-Create a repository-backed API service named `AIsales`. Configure its runtime
-database URL with the restricted role only:
+Create a repository-backed API service named `AIsales`. In Railway Build
+Configuration, leave Root Directory at its default `/` and set
+`RAILWAY_DOCKERFILE_PATH` to `infra/Dockerfile`; this repository has no
+root-level Dockerfile. Configure its runtime database URL with the restricted
+role only:
 
 | Variable | Railway value |
 | --- | --- |
@@ -68,6 +74,7 @@ database URL with the restricted role only:
 | `PLATFORM_OWNER_TOKEN` | A high-entropy secret. |
 | `CURRENT_TERMS_REVISION` | `v1` |
 | `ENVIRONMENT` | `prototype` |
+| `RAILWAY_DOCKERFILE_PATH` | `infra/Dockerfile` |
 
 `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` are entered by the human in Railway;
 never commit them or paste their values into this repository. The API has no
