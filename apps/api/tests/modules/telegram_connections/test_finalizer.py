@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 
 from app.modules.telegram_connections.finalizer import ConnectionFinalizer, ConnectionUnavailable
 from telegram_connector.runtime.connection import ConnectionHealth, InMemoryConnectionRepository
@@ -87,3 +89,21 @@ def test_finalizer_never_starts_supervisor_when_connection_persistence_fails() -
         )
 
     assert supervisor.started == []
+
+
+def test_telegram_identity_migration_creates_unique_numeric_identity() -> None:
+    from importlib import import_module
+    from io import StringIO
+
+    module = import_module("apps.api.app.db.migrations.versions.0004_telegram_connection_identity")
+    output = StringIO()
+    context = MigrationContext.configure(
+        url="postgresql://migration-test.invalid/prototype",
+        opts={"as_sql": True, "literal_binds": True, "output_buffer": output},
+    )
+    module.op = Operations(context)
+    module.upgrade()
+
+    rendered = output.getvalue()
+    assert "telegram_user_id BIGINT" in rendered
+    assert "uq_telegram_accounts_telegram_user_id" in rendered
