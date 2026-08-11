@@ -116,6 +116,18 @@ def test_guide_selects_the_infra_dockerfile_for_each_repository_service():
         assert "| `RAILWAY_DOCKERFILE_PATH` | `infra/Dockerfile` |" in section
 
 
+def test_railway_config_forces_the_reviewed_dockerfile_builder():
+    """A root config prevents Railway from falling back to Railpack for this repo."""
+    config_path = PROJECT_ROOT / "railway.json"
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    assert config["build"] == {
+        "builder": "DOCKERFILE",
+        "dockerfilePath": "/infra/Dockerfile",
+    }
+
+
 def test_deployment_guide_requires_a_safe_first_deploy_handoff():
     """A first deployment must stop before an unsafe service reaches production."""
     guide = (PROJECT_ROOT / "docs" / "deployment" / "railway-stage-0.md").read_text(
