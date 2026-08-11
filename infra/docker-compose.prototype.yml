@@ -1,0 +1,49 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ai_sales
+      POSTGRES_USER: ai_sales_owner
+      POSTGRES_PASSWORD: ${POSTGRES_OWNER_PASSWORD:?POSTGRES_OWNER_PASSWORD is required}
+      APP_DB_PASSWORD: ${POSTGRES_RUNTIME_PASSWORD:?POSTGRES_RUNTIME_PASSWORD is required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ai_sales_owner -d ai_sales"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    command: ["alembic", "-c", "/workspace/alembic.ini", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://ai_sales_owner:${POSTGRES_OWNER_PASSWORD:?POSTGRES_OWNER_PASSWORD is required}@db:5432/ai_sales
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://ai_sales_runtime:${POSTGRES_RUNTIME_PASSWORD:?POSTGRES_RUNTIME_PASSWORD is required}@db:5432/ai_sales
+      SESSION_ENCRYPTION_KEY: ${SESSION_ENCRYPTION_KEY:?SESSION_ENCRYPTION_KEY is required}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:?TELEGRAM_API_ID is required}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:?TELEGRAM_API_HASH is required}
+      PLATFORM_OWNER_ID: ${PLATFORM_OWNER_ID:?PLATFORM_OWNER_ID is required}
+      PLATFORM_OWNER_TOKEN: ${PLATFORM_OWNER_TOKEN:?PLATFORM_OWNER_TOKEN is required}
+      CURRENT_TERMS_REVISION: ${CURRENT_TERMS_REVISION:?CURRENT_TERMS_REVISION is required}
+      ENVIRONMENT: prototype
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+volumes:
+  postgres_data:

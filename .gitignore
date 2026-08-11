@@ -17,6 +17,8 @@ tdata/
 sessions/
 *.session
 *.session-journal
+tests/fixtures/telegram/*
+!tests/fixtures/telegram/README.md
 
 # Customer exports and backups
 exports/
@@ -26,6 +28,7 @@ backups/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest-tmp/
 .venv/
 venv/
 
