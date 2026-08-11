@@ -1,6 +1,6 @@
 """Bind each managed connection to one Telegram numeric account identity.
 
-Revision ID: 0004_telegram_connection_identity
+Revision ID: 0004_telegram_identity
 Revises: 0003_runtime_health
 Create Date: 2026-08-11
 """
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 
-revision = "0004_telegram_connection_identity"
+revision = "0004_telegram_identity"
 down_revision = "0003_runtime_health"
 branch_labels = None
 depends_on = None

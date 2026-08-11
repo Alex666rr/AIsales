@@ -95,7 +95,7 @@ def test_telegram_identity_migration_creates_unique_numeric_identity() -> None:
     from importlib import import_module
     from io import StringIO
 
-    module = import_module("apps.api.app.db.migrations.versions.0004_telegram_connection_identity")
+    module = import_module("apps.api.app.db.migrations.versions.0004_telegram_identity")
     output = StringIO()
     context = MigrationContext.configure(
         url="postgresql://migration-test.invalid/prototype",
@@ -107,3 +107,4 @@ def test_telegram_identity_migration_creates_unique_numeric_identity() -> None:
     rendered = output.getvalue()
     assert "telegram_user_id BIGINT" in rendered
     assert "uq_telegram_accounts_telegram_user_id" in rendered
+    assert len(module.revision) <= 32

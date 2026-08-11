@@ -70,7 +70,7 @@ from .modules.telegram_connections.service import (
 )
 
 
-REQUIRED_SCHEMA_REVISIONS = frozenset({"0004_telegram_connection_identity"})
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0004_telegram_identity"})
 
 
 class TelegramPolicyContextIssuer:
