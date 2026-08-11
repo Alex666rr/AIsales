@@ -127,19 +127,22 @@ def _read_active_account_index(info: bytes) -> int:
     active_index = indices[0]
     if offset < len(info):
         active_index, offset = _read_i32(info, offset)
-    if offset != len(info) or active_index not in indices:
+    if offset != len(info) or (active_index not in indices and active_index != -1):
         raise TdataParseRejected()
-    return active_index
+    return active_index if active_index in indices else indices[0]
 
 
 def _account_file_name(index: int) -> str:
     name = "data" if index == 0 else f"data#{index + 1}"
-    return "".join(f"{byte & 0x0F:X}{byte >> 4:X}" for byte in hashlib.md5(name.encode("utf-8")).digest())
+    return "".join(f"{byte & 0x0F:X}{byte >> 4:X}" for byte in hashlib.md5(name.encode("utf-8")).digest()[:8])
 
 
 def _read_authorization(payload: bytes) -> tuple[int, int, bytes]:
     user_id, offset = _read_i32(payload, 0)
     dc_id, offset = _read_i32(payload, offset)
+    if user_id == -1 and dc_id == -1:
+        user_id, offset = _read_i64(payload, offset)
+        dc_id, offset = _read_i32(payload, offset)
     if user_id <= 0 or dc_id <= 0:
         raise TdataParseRejected()
     key_count, offset = _read_i32(payload, offset)
@@ -167,6 +170,12 @@ def _read_i32(data: bytes, offset: int) -> tuple[int, int]:
     if len(data) - offset < 4:
         raise TdataParseRejected()
     return int.from_bytes(data[offset : offset + 4], "big", signed=True), offset + 4
+
+
+def _read_i64(data: bytes, offset: int) -> tuple[int, int]:
+    if len(data) - offset < 8:
+        raise TdataParseRejected()
+    return int.from_bytes(data[offset : offset + 8], "big", signed=True), offset + 8
 
 
 def _decrypt_descriptor(encrypted: bytes, auth_key: bytes) -> bytes:
