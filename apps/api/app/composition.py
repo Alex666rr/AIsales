@@ -64,7 +64,7 @@ from .modules.policy.service import (
 )
 
 
-REQUIRED_SCHEMA_REVISIONS = frozenset({"0003_runtime_health"})
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0004_telegram_connection_identity"})
 
 
 class TelegramPolicyContextIssuer:
