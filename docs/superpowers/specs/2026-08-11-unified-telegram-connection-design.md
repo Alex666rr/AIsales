@@ -32,7 +32,7 @@ QR не является сессией, не сохраняется после 
 
 1. Владелец закрывает Telegram Desktop и запускает локальный CLI на компьютере с конкретной папкой `tdata`.
 2. CLI делает защищённую временную копию, запрещает UNC, symlink/reparse points, неregular files и изменённый источник; разбирает только копию.
-3. CLI подтверждает сессию у Telegram через `get_me`, затем передаёт **только зашифрованный session material** в authenticated API по одноразовому import ticket.
+3. API выдаёт одноразовый import ticket с короткоживущей временной публичной частью ключа. CLI подтверждает сессию у Telegram через `get_me`, шифрует session material этой публичной частью и передаёт только ciphertext в authenticated API.
 4. Временная копия, ключи Desktop и passcode уничтожаются; исходная папка не покидает компьютер владельца.
 
 Railway никогда не принимает raw `tdata`, zip-архив или Desktop passcode. Повторный импорт одного аккаунта выполняет идемпотентное обновление зашифрованной сессии после явного подтверждения владельца.
@@ -41,7 +41,7 @@ Railway никогда не принимает raw `tdata`, zip-архив ил�
 
 `ConnectionAttempt` содержит UUID попытки, organisation ID, owner ID, метод (`phone`, `qr`, `tdata`), статус, время истечения и серверный transient state. Он не содержит session string, Telegram-код, 2FA-пароль, raw QR или `tdata`.
 
-`TelegramConnection` связывает организацию с Telegram account ID, зашифрованной сессией, состоянием supervisor и метаданными подключения. В базе допустима только одна активная связь пары `(organization_id, telegram_account_id)`. Сеансовый материал шифруется существующим AES-GCM keyring; в repr, pydantic dump и аудит попадают только безопасные метаданные.
+`TelegramConnection` связывает организацию с внутренним UUID, Telegram numeric account ID, зашифрованной сессией, состоянием supervisor и метаданными подключения. Telegram numeric account ID имеет уникальное ограничение в БД; повторный импорт того же аккаунта обновляет его сессию только в той же организации и после owner authorization. Сеансовый материал шифруется существующим AES-GCM keyring; в repr, pydantic dump и аудит попадают только безопасные метаданные.
 
 ## API-контракт
 
@@ -52,8 +52,8 @@ Railway никогда не принимает raw `tdata`, zip-архив ил�
 - `POST /telegram/connections/{attempt_id}/phone/password` — принимает 2FA-пароль и завершает попытку.
 - `POST /telegram/connections/qr/start` — возвращает attempt ID, QR payload и expiry.
 - `GET /telegram/connections/{attempt_id}/qr/status` — безопасно возвращает состояние; не включает session material.
-- `POST /telegram/connections/tdata/ticket` — выдаёт одноразовый короткоживущий ticket локальному CLI.
-- `POST /telegram/connections/tdata/complete` — принимает ticket и уже зашифрованный session envelope, проверяет владельца/ticket/account, затем сохраняет сессию.
+- `POST /telegram/connections/tdata/ticket` — выдаёт одноразовый короткоживущий ticket и временную публичную часть ключа локальному CLI.
+- `POST /telegram/connections/tdata/complete` — принимает ticket и ciphertext session envelope, проверяет владельца/ticket/account, расшифровывает только в памяти и сразу сохраняет сессию AES-GCM keyring.
 
 Все ответы используют ограниченный error taxonomy: `invalid_request`, `attempt_expired`, `attempt_not_found`, `authorization_pending`, `password_required`, `authorization_failed`, `connection_conflict`, `service_unavailable`. Технические исключения, URL/параметры, пароль, код и секреты в ответ не включаются.
 
@@ -61,6 +61,7 @@ Railway никогда не принимает raw `tdata`, zip-архив ил�
 
 - API ID/hash, session encryption key и platform owner credentials остаются только в Railway Variables; не в GitHub и не в клиентском JavaScript.
 - Локальный CLI запрашивает API ID/hash и passcode через hidden input или локальные env vars; не печатает и не пишет их.
+- Временная закрытая часть ticket хранится только в памяти сервера до expiry и уничтожается при consume, expiry либо ошибке; CLI никогда не получает ключ шифрования Railway.
 - Перед сохранением каждого метода требуется `get_me`; account ID из результата сопоставляется с материалом метода.
 - Любая ошибка хранилища, шифрования или ownership check означает deny и очищает transient material.
 - Supervisor стартует только после успешного атомарного сохранения encrypted session; archive/revoke очищает lease и запрещает дальнейшую работу.
