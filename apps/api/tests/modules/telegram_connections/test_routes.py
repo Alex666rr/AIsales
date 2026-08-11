@@ -10,7 +10,8 @@ from fastapi import HTTPException
 from app.main import create_app
 from app.modules.policy.models import PlatformOwnerPrincipal
 from app.modules.telegram_connections.models import AttemptStatus, AttemptView, ConnectionMethod, QrStartView
-from app.modules.telegram_connections.routes import build_connection_router
+from app.modules.telegram_connections.routes import build_connection_router, build_tdata_ticket_router
+from app.modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
 async def asgi_post(application, path: str, payload: dict[str, object]) -> tuple[int, bytes]:
@@ -130,3 +131,17 @@ def test_qr_start_route_returns_short_lived_link_only_in_its_start_response() ->
 
     assert status == 201
     assert json.loads(body)["qr_url"] == "tg://login?token=QR-SENTINEL"
+
+
+def test_tdata_ticket_route_returns_public_key_only_to_authenticated_owner() -> None:
+    async def principal() -> PlatformOwnerPrincipal:
+        return PlatformOwnerPrincipal(principal_id=uuid4())
+
+    application = create_app()
+    application.include_router(build_tdata_ticket_router(TdataTicketRegistry(), principal_dependency=principal))
+
+    status, body = asyncio.run(asgi_post(application, "/telegram/connections/tdata/tickets", {}))
+
+    response = json.loads(body)
+    assert status == 201
+    assert set(response) == {"ticket_id", "expires_at", "public_key"}

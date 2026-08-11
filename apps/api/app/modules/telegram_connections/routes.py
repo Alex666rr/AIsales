@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Protocol, TypeVar
 from uuid import UUID
 
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.modules.policy.models import PlatformOwnerPrincipal
 
 from .models import AttemptView, QrStartView
+from .tdata_ticket import TdataTicketRegistry
 
 
 class PhoneStartRequest(BaseModel):
@@ -61,6 +63,14 @@ class PhoneAttemptRoutes(Protocol):
 PrincipalDependency = Callable[[], Awaitable[PlatformOwnerPrincipal]]
 
 
+class TdataTicketView(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    ticket_id: UUID
+    expires_at: datetime
+    public_key: str
+
+
 def build_connection_router(
     attempts: PhoneAttemptRoutes,
     *,
@@ -104,6 +114,27 @@ def build_connection_router(
         principal: PlatformOwnerPrincipal = Depends(principal_dependency),
     ) -> AttemptView:
         return await _safe_call(attempts.qr_status(principal, attempt_id))
+
+    return router
+
+
+def build_tdata_ticket_router(
+    tickets: TdataTicketRegistry,
+    *,
+    principal_dependency: PrincipalDependency,
+) -> APIRouter:
+    router = APIRouter(prefix="/telegram/connections/tdata", tags=["telegram-connections"])
+
+    @router.post("/tickets", response_model=TdataTicketView, status_code=status.HTTP_201_CREATED)
+    async def issue_ticket(
+        principal: PlatformOwnerPrincipal = Depends(principal_dependency),
+    ) -> TdataTicketView:
+        ticket = await tickets.issue(principal.principal_id)
+        return TdataTicketView(
+            ticket_id=ticket.ticket_id,
+            expires_at=ticket.expires_at,
+            public_key=ticket.public_key,
+        )
 
     return router
 
