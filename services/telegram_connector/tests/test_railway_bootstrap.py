@@ -1,3 +1,4 @@
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -71,6 +72,33 @@ def test_guide_selects_the_infra_dockerfile_for_each_repository_service():
 
     for section in (migrations_section, api_section):
         assert "| `RAILWAY_DOCKERFILE_PATH` | `infra/Dockerfile` |" in section
+
+
+def test_deployment_guide_requires_a_safe_first_deploy_handoff():
+    """A first deployment must stop before an unsafe service reaches production."""
+    guide = (PROJECT_ROOT / "docs" / "deployment" / "railway-stage-0.md").read_text(
+        encoding="utf-8"
+    )
+    api_section = guide.split("## AIsales", maxsplit=1)[1].split(
+        "## Valid value construction", maxsplit=1
+    )[0]
+
+    assert "Do not click Deploy until" in guide
+    assert "Postgres → Migrations → AIsales" in guide
+    assert not re.search(r"`?TELEGRAM_API_(?:ID|HASH)`?\s*(?:=|:)\s*\S+", guide)
+    assert "Review all staged Railway service and variable changes" in guide
+    assert "Deploy `Postgres` and wait until Railway reports it healthy" in guide
+    assert "alembic -c /workspace/alembic.ini upgrade head" in guide
+    assert "migration job exits successfully" in guide
+    assert "`/healthz` endpoint to report healthy" in guide
+    assert "Stop if role bootstrap fails" in guide
+    assert "Stop if Alembic migration fails" in guide
+    assert "Stop immediately if any service log prints a secret" in guide
+    for variable in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH"):
+        assert (
+            f"| `{variable}` | Enter the value from Telegram directly in Railway. |"
+            in api_section
+        )
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="Docker is not installed")

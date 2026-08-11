@@ -94,3 +94,27 @@ Base64-encode those bytes; do not use a passphrase or a shorter key. Generate
 `PLATFORM_OWNER_ID` as UUID version 4. Set `CURRENT_TERMS_REVISION` exactly to
 `v1` for the initial deployment. Enter the two Telegram variables in Railway
 before intentionally deploying the API.
+
+## First deployment handoff
+
+Do not click Deploy until every item below is complete. The required order is
+**Postgres → Migrations → AIsales**; do not start a later service while an
+earlier one is unhealthy or unresolved.
+
+1. Enter values from Telegram only in `TELEGRAM_API_ID` and
+   `TELEGRAM_API_HASH`, directly in Railway. Do not put Telegram values in a
+   repository file, command, log, or variable description.
+2. Review all staged Railway service and variable changes against this guide.
+   Confirm that `AIsales` has only its runtime `DATABASE_URL` and no owner or
+   administrative credentials.
+3. Deploy `Postgres` and wait until Railway reports it healthy.
+4. Deploy `Migrations`. Require successful output from
+   `alembic -c /workspace/alembic.ini upgrade head` before proceeding.
+   Stop if role bootstrap fails. Stop if Alembic migration fails.
+5. Deploy `AIsales` only after the migration job exits successfully. Require
+   its `/healthz` endpoint to report healthy.
+
+Stop immediately if any service log prints a secret, or if a role or migration
+error appears. Remove the exposed value from Railway, rotate it, correct the
+failure, and repeat the checklist from the affected service; do not deploy the
+API until the required preceding service is healthy.
