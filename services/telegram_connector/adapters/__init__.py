@@ -2,6 +2,14 @@
 
 from .base import SessionAdapter, SessionMaterial, SessionProbeResult
 from .bot import BotAdapter
+from .concrete import (
+    DefaultDenyTDataConverter,
+    TelegramBotApiClient,
+    TelethonAuthorizationClientFactory,
+    TelethonClientAdapter,
+    TelethonRuntimeClientFactory,
+    VettedTelethonSessionConverter,
+)
 from .phone import AuthStep, PhoneAdapter
 from .qr import QRAdapter
 from .registry import AdapterRegistry
@@ -12,12 +20,18 @@ __all__ = [
     "AdapterRegistry",
     "AuthStep",
     "BotAdapter",
+    "DefaultDenyTDataConverter",
     "PhoneAdapter",
     "QRAdapter",
     "SessionAdapter",
     "SessionMaterial",
     "SessionProbeResult",
     "TDataAdapter",
+    "TelegramBotApiClient",
+    "TelethonAuthorizationClientFactory",
+    "TelethonClientAdapter",
     "TelethonFileAdapter",
     "TelethonStringAdapter",
+    "TelethonRuntimeClientFactory",
+    "VettedTelethonSessionConverter",
 ]

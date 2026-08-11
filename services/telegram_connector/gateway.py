@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from telegram_connector.compatibility import CompatibilityOutcome, CompatibilityRegistry
 from telegram_connector.error_codes import TelegramErrorCode, TelegramGatewayError, map_telegram_error
+from telegram_connector.adapters.concrete import TelethonClientAdapter
 
 
 class MessageCommand(BaseModel):
@@ -149,8 +150,15 @@ _SYNTHETIC_ADAPTER_CAPABILITIES = _RegisteredAdapterCapabilities(
     remote_idempotency=True,
     authenticated_inbound=True,
 )
+_TELETHON_ADAPTER_CAPABILITIES = _RegisteredAdapterCapabilities(
+    adapter="telethon",
+    adapter_version="1.44",
+    remote_idempotency=False,
+    authenticated_inbound=True,
+)
 _REGISTERED_ADAPTER_IMPLEMENTATIONS = {
     _RegisteredSyntheticAdapter: _SYNTHETIC_ADAPTER_CAPABILITIES,
+    TelethonClientAdapter: _TELETHON_ADAPTER_CAPABILITIES,
 }
 
 

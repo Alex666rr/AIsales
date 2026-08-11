@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from telegram_connector.proxies import ProxyConfig
 from telegram_connector.session_store import SessionRef
@@ -48,6 +48,12 @@ class ConnectionRecord(BaseModel):
     lease_expires_at: datetime | None = None
     fence_token: int = Field(default=0, ge=0)
 
+    @model_validator(mode="after")
+    def _session_belongs_to_account(self) -> "ConnectionRecord":
+        if self.session_ref.account_id != self.account_id:
+            raise ValueError("session reference account mismatch")
+        return self
+
     @field_validator("retry_at")
     @classmethod
     def _utc_retry_timestamp(cls, value: datetime | None) -> datetime | None:
@@ -87,6 +93,9 @@ class ConnectionRepository(Protocol):
 
     async def renew_lease(self, record: ConnectionRecord, owner_id: UUID, *, lease_seconds: float) -> ConnectionRecord | None:
         """Advance version while retaining the owner and fencing token for a live client."""
+
+    async def fail_closed(self, record: ConnectionRecord, owner_id: UUID) -> ConnectionRecord | None:
+        """Persist a safe reconnectable state and release this exact failed monitor lease."""
 
 
 class InMemoryConnectionRepository:
@@ -167,6 +176,39 @@ class InMemoryConnectionRepository:
                 return None
             saved = record.model_copy(update={"version": record.version + 1, "lease_expires_at": now + timedelta(seconds=lease_seconds)})
             self._records[record.account_id] = saved
+            return saved
+
+    async def fail_closed(self, record: ConnectionRecord, owner_id: UUID) -> ConnectionRecord | None:
+        async with self._lock:
+            now = self._clock.now()
+            current = self._records.get(record.account_id)
+            if (
+                current is None
+                or current.version != record.version
+                or current.lease_owner_id != owner_id
+                or current.fence_token != record.fence_token
+            ):
+                return None
+            health = current.health.model_copy(
+                update={
+                    "state": "quarantine",
+                    "last_seen_at": now,
+                    "proxy_ip": None,
+                    "latency_ms": None,
+                    "error_code": "monitor_failed",
+                }
+            )
+            saved = current.model_copy(
+                update={
+                    "health": health,
+                    "retry_at": None,
+                    "version": current.version + 1,
+                    "lease_owner_id": None,
+                    "lease_expires_at": None,
+                }
+            )
+            self._records[record.account_id] = saved
+            self.history.append(saved)
             return saved
 
 

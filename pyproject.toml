@@ -9,12 +9,14 @@ description = "Test-only Telegram connector prototype for AI Sales Manager."
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "alembic>=1.14,<2",
-    "asyncpg>=0.30,<1",
     "cryptography>=44,<45",
     "fastapi>=0.115,<1",
     "pydantic>=2.10,<3",
     "pydantic-settings>=2.7,<3",
+    "psycopg[binary]>=3.2,<4",
     "sqlalchemy[asyncio]>=2.0,<3",
+    "telethon>=1.44,<2",
+    "python-socks[asyncio]>=2.7,<3",
     "uvicorn>=0.34,<1",
 ]
 

@@ -551,3 +551,88 @@ def test_stop_disconnects_active_client_and_archive_prevents_restart():
         assert (await supervisor.start(UUID(int=10))).state == "archived"
 
     asyncio.run(scenario())
+
+
+def test_connection_record_rejects_a_session_owned_by_another_account():
+    """Removing the account/session check could start one account with another account's credential."""
+    with pytest.raises(ValueError, match="session reference account mismatch"):
+        ConnectionRecord(
+            account_id=UUID(int=10),
+            session_ref=SessionRef(account_id=UUID(int=99), session_id=UUID(int=11), key_version=1),
+            health=ConnectionHealth(
+                state="quarantine",
+                last_seen_at=None,
+                proxy_ip=None,
+                latency_ms=None,
+                error_code=None,
+            ),
+        )
+
+
+@pytest.mark.parametrize("failure_source", ["sleeper", "repository"])
+def test_abnormal_monitor_exit_disconnects_and_releases_the_lease_for_takeover(failure_source):
+    """An unhandled heartbeat failure must not leave a live client holding a split-brain lease."""
+
+    class FailingMonitorSleeper:
+        async def sleep(self, seconds: float) -> None:
+            raise RuntimeError("MONITOR-SLEEPER-SENTINEL-SECRET")
+
+    class RepositoryFailureAfterActivation(InMemoryConnectionRepository):
+        def __init__(self, records, clock):
+            super().__init__(records, clock=clock)
+            self.renewals = 0
+
+        async def renew_lease(self, record, owner_id, *, lease_seconds):
+            self.renewals += 1
+            if self.renewals == 2:
+                raise RuntimeError("MONITOR-REPOSITORY-SENTINEL-SECRET")
+            return await super().renew_lease(record, owner_id, lease_seconds=lease_seconds)
+
+    async def scenario():
+        clock = ManualClock()
+        seed_repository, _ = make_repository(repository_clock=clock)
+        seed = await seed_repository.get(UUID(int=10))
+        assert seed is not None
+        repository = (
+            RepositoryFailureAfterActivation((seed,), clock)
+            if failure_source == "repository"
+            else InMemoryConnectionRepository((seed,), clock=clock)
+        )
+        first_factory = ScriptedFactory([None])
+        first = make_supervisor(
+            repository,
+            first_factory,
+            clock,
+            AdvancingSleeper(clock),
+            monitor_sleeper=(
+                FailingMonitorSleeper() if failure_source == "sleeper" else AdvancingSleeper(clock)
+            ),
+            lease_duration_seconds=30,
+        )
+
+        assert (await first.start(UUID(int=10))).state == "active"
+        for _ in range(10):
+            if first_factory.clients[0].disconnected:
+                break
+            await asyncio.sleep(0)
+
+        assert first_factory.clients[0].disconnected is True
+        failed_closed = await repository.get(UUID(int=10))
+        assert failed_closed is not None
+        assert (failed_closed.health.state, failed_closed.health.error_code) == (
+            "quarantine",
+            "monitor_failed",
+        )
+        assert failed_closed.lease_owner_id is None
+
+        takeover_factory = ScriptedFactory([None])
+        takeover = make_supervisor(
+            repository,
+            takeover_factory,
+            clock,
+            AdvancingSleeper(clock),
+        )
+        assert (await takeover.start(UUID(int=10))).state == "active"
+        assert len(takeover_factory.clients) == 1
+
+    asyncio.run(scenario())

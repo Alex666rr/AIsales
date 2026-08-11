@@ -60,7 +60,7 @@ class CiphertextSessionRepository(Protocol):
         """Return records for contract checks without exposing any plaintext."""
 
 
-class _InMemoryCiphertextRepository:
+class InMemoryCiphertextRepository:
     """A test-only repository stand-in; deployment supplies the PostgreSQL repository."""
 
     def __init__(self) -> None:
@@ -84,13 +84,27 @@ class EncryptedSessionStore:
         keys: Mapping[int, bytes | bytearray | memoryview],
         *,
         active_key_version: int,
-        repository: CiphertextSessionRepository | None = None,
+        repository: CiphertextSessionRepository,
     ) -> None:
         if active_key_version not in keys:
             raise ValueError("active encryption key version is unavailable")
         self._keys = {version: self._validate_key(key) for version, key in keys.items()}
         self._active_key_version = active_key_version
-        self._repository = repository or _InMemoryCiphertextRepository()
+        self._repository = repository
+
+    @classmethod
+    def test_store(
+        cls,
+        keys: Mapping[int, bytes | bytearray | memoryview],
+        *,
+        active_key_version: int,
+    ) -> "EncryptedSessionStore":
+        """Construct the explicit process-local fake used only by unit tests."""
+        return cls(
+            keys,
+            active_key_version=active_key_version,
+            repository=InMemoryCiphertextRepository(),
+        )
 
     def put(self, account_id: UUID, payload: bytes) -> SessionRef:
         """Authenticate and encrypt transient session bytes before persistence."""

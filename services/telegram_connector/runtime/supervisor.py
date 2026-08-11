@@ -181,7 +181,9 @@ class ConnectionSupervisor:
                     if saved is None:
                         await self._drop_client(account_id, client)
                         return await self.health(account_id)
-                    self._monitor_tasks[account_id] = asyncio.create_task(self._monitor(account_id, saved, client))
+                    monitor = asyncio.create_task(self._monitor(account_id, saved, client))
+                    self._monitor_tasks[account_id] = monitor
+                    monitor.add_done_callback(self._observe_monitor_result)
                     return saved.health
                 except AuthorizationLostError:
                     await self._cleanup_failed_reservation(account_id, lease)
@@ -341,9 +343,26 @@ class ConnectionSupervisor:
                 record = renewed
         except asyncio.CancelledError:
             return
+        except Exception:
+            try:
+                await self._repository.fail_closed(record, self._owner_id)
+            except Exception:
+                pass
+            finally:
+                await self._drop_client(account_id, client)
         finally:
             if self._monitor_tasks.get(account_id) is asyncio.current_task():
                 self._monitor_tasks.pop(account_id, None)
+
+    @staticmethod
+    def _observe_monitor_result(task: asyncio.Task[None]) -> None:
+        """Retrieve every background result so safe failures never reach the loop logger."""
+        if task.cancelled():
+            return
+        try:
+            task.exception()
+        except Exception:
+            pass
 
     @staticmethod
     async def _safe_disconnect(client: TelegramClient) -> None:

@@ -109,9 +109,12 @@ def test_sensitive_session_material_is_absent_from_public_serialization(tmp_path
         payload=sentinel,
         credentials={"token": "RAW-CREDENTIAL-SENTINEL"},
     )
-    upload = QuarantinedUpload(
-        original_path=tmp_path / "customer-session.tdata",
-        material=material,
+    original_path = tmp_path / "customer-session.tdata"
+    original_path.write_bytes(sentinel)
+    upload = QuarantinedUpload.capture(
+        original_path=original_path,
+        adapter="tdata",
+        credentials={"token": "RAW-CREDENTIAL-SENTINEL"},
     )
     envelope = UploadEnvelope(upload=upload)
 
@@ -135,14 +138,14 @@ def test_sensitive_session_material_is_absent_from_public_serialization(tmp_path
 
     assert material.model_dump() == {"adapter": "tdata"}
     assert material.model_dump(include={"payload", "credentials"}) == {}
-    assert upload.model_dump() == {"upload_id": upload.upload_id}
+    assert upload.model_dump() == {"upload_id": upload.upload_id, "adapter": "tdata"}
 
 
 def test_store_persists_authenticated_ciphertext_with_key_version_only():
     """Replacing persisted ciphertext or retaining plaintext must break the storage contract."""
     account_id = UUID("12345678-1234-5678-1234-567812345678")
     payload = b"session bytes that must never be persisted as-is"
-    store = EncryptedSessionStore({7: b"k" * 32}, active_key_version=7)
+    store = EncryptedSessionStore.test_store({7: b"k" * 32}, active_key_version=7)
 
     reference = store.put(account_id, payload)
     persisted = store.persisted_records()[0]
@@ -163,7 +166,7 @@ def test_store_persists_authenticated_ciphertext_with_key_version_only():
 
 def test_store_returns_references_with_generated_ids():
     """A stored session is identified by generated metadata rather than session bytes."""
-    reference = EncryptedSessionStore({1: b"x" * 32}, active_key_version=1).put(
+    reference = EncryptedSessionStore.test_store({1: b"x" * 32}, active_key_version=1).put(
         uuid4(), b"transient bytes"
     )
 
@@ -182,7 +185,7 @@ def test_store_returns_references_with_generated_ids():
 def test_store_accepts_only_explicit_bytes_like_key_material(key_factory):
     """Bytes, bytearray, and memoryview inputs are normalized without retaining mutable key state."""
     key = key_factory()
-    store = EncryptedSessionStore({1: key}, active_key_version=1)
+    store = EncryptedSessionStore.test_store({1: key}, active_key_version=1)
     if isinstance(key, bytearray):
         key[:] = b"z" * 32
     if isinstance(key, memoryview) and not key.readonly:
@@ -198,7 +201,7 @@ def test_store_accepts_only_explicit_bytes_like_key_material(key_factory):
 def test_store_rejects_implicit_or_non_bytes_key_material_without_leaking_it(invalid_key):
     """Implicit bytes coercion must not turn arbitrary values into usable encryption keys."""
     with pytest.raises(TypeError, match="^session encryption key material must be bytes-like$") as failure:
-        EncryptedSessionStore({1: invalid_key}, active_key_version=1)
+        EncryptedSessionStore.test_store({1: invalid_key}, active_key_version=1)
 
     assert "kkkk" not in str(failure.value)
     assert "107" not in str(failure.value)
@@ -213,7 +216,7 @@ def test_store_rejects_malformed_ciphertext_with_a_safe_authentication_error(cip
         key_version=1,
         ciphertext=ciphertext,
     )
-    store = EncryptedSessionStore({1: b"k" * 32}, active_key_version=1)
+    store = EncryptedSessionStore.test_store({1: b"k" * 32}, active_key_version=1)
 
     with pytest.raises(SessionCiphertextAuthenticationError) as failure:
         store.decrypt(record)
@@ -225,7 +228,7 @@ def test_store_rejects_malformed_ciphertext_with_a_safe_authentication_error(cip
 
 def test_store_normalizes_unknown_key_versions_to_the_safe_domain_error():
     """Records referring to retired or unavailable key versions expose no key-management detail."""
-    store = EncryptedSessionStore({1: b"k" * 32}, active_key_version=1)
+    store = EncryptedSessionStore.test_store({1: b"k" * 32}, active_key_version=1)
     reference = store.put(UUID("12345678-1234-5678-1234-567812345678"), b"session bytes")
     unknown_key_record = store.persisted_records()[0].model_copy(update={"key_version": 2})
 
@@ -234,3 +237,14 @@ def test_store_normalizes_unknown_key_versions_to_the_safe_domain_error():
 
     assert str(failure.value) == "session ciphertext authentication failed"
     assert str(reference.key_version) not in str(failure.value)
+
+
+def test_session_store_requires_an_explicit_repository_outside_test_construction():
+    """A missing repository must never silently turn production ciphertext into process-local state."""
+    with pytest.raises(TypeError):
+        EncryptedSessionStore({1: b"k" * 32}, active_key_version=1)
+
+    store = EncryptedSessionStore.test_store({1: b"k" * 32}, active_key_version=1)
+    reference = store.put(UUID(int=1), b"test-only payload")
+
+    assert store.get(reference) == b"test-only payload"

@@ -53,6 +53,7 @@ compatibility_rows = Table(
 def create_gateway_schema(bind: Engine) -> None:
     """Create the same tables supplied by the PostgreSQL Alembic migration for local contract tests."""
     gateway_metadata.create_all(bind)
+    create_telegram_state_schema(bind)
 
 
 class SqlAlchemyMessageDeliveryRepository:
@@ -252,3 +253,21 @@ class SqlAlchemyCompatibilityRegistry:
             proxy_id=UUID(row["proxy_key"]) if row["proxy_key"] else None,
             outcome=row["outcome"], recorded_at=SqlAlchemyMessageDeliveryRepository._utc(row["recorded_at"]) or datetime.now(UTC),
         ) for row in rows)
+
+
+from telegram_connector.postgres_state import (  # noqa: E402 - avoids gateway model cycles
+    ProxyCredentialCipher,
+    SqlAlchemyCiphertextSessionRepository,
+    SqlAlchemyConnectionRepository,
+    SqlAlchemyProxyAssignmentRepository,
+    SqlAlchemyTelegramAccountRepository,
+    TelegramStateRepositoryUnavailable,
+    create_telegram_state_schema,
+    telegram_accounts,
+    telegram_connections,
+    telegram_proxies,
+    telegram_proxy_assignments,
+    telegram_proxy_overrides,
+    telegram_session_ciphertexts,
+    telegram_state_metadata,
+)

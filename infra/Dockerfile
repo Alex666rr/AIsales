@@ -8,8 +8,8 @@ WORKDIR /workspace
 
 COPY pyproject.toml ./
 COPY services ./services
+COPY apps ./apps
+COPY alembic.ini ./alembic.ini
 RUN pip install --no-cache-dir .
 
-COPY apps ./apps
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:create_app_from_environment", "--factory", "--host", "0.0.0.0", "--port", "8000"]

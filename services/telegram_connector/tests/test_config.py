@@ -1,10 +1,12 @@
 from datetime import UTC, datetime, timedelta, timezone
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.app.db.session import create_session_factory
+from apps.api.app.config import ApiSettings
 from apps.api.app.main import create_app
 from telegram_connector.config import ConnectorSettings
 from telegram_connector.models import (
@@ -15,7 +17,7 @@ from telegram_connector.models import (
 
 def set_required_connector_environment(monkeypatch) -> None:
     """Provide non-secret test values for all mandatory connector settings."""
-    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_sales")
+    monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg://runtime:password@localhost:5432/ai_sales")
     monkeypatch.setenv("SESSION_ENCRYPTION_KEY", "test-key")
     monkeypatch.setenv("TELEGRAM_API_ID", "12345")
     monkeypatch.setenv("TELEGRAM_API_HASH", "test-hash")
@@ -36,9 +38,27 @@ def test_settings_loads_required_test_environment(monkeypatch):
 
     settings = ConnectorSettings()
 
-    assert str(settings.database_url) == "postgresql+asyncpg://postgres:postgres@localhost:5432/ai_sales"
+    assert str(settings.database_url) == "postgresql+psycopg://runtime:password@localhost:5432/ai_sales"
     assert settings.telegram_api_id == 12345
     assert settings.environment == "test"
+
+
+@pytest.mark.parametrize("settings_type", [ConnectorSettings, ApiSettings])
+def test_database_configuration_rejects_a_driver_that_cannot_serve_both_stacks(
+    monkeypatch, settings_type
+):
+    """Allowing asyncpg would make synchronous Alembic and gateway construction fail at deployment."""
+    set_required_connector_environment(monkeypatch)
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+asyncpg://runtime:password@localhost:5432/ai_sales",
+    )
+    monkeypatch.setenv("PLATFORM_OWNER_ID", str(UUID(int=1)))
+    monkeypatch.setenv("PLATFORM_OWNER_TOKEN", "test-owner-token")
+    monkeypatch.setenv("CURRENT_TERMS_REVISION", "terms-test")
+
+    with pytest.raises(ValidationError, match="psycopg"):
+        settings_type()
 
 
 def test_timestamp_serialization_normalizes_to_utc():
@@ -62,6 +82,7 @@ def test_composition_root_exposes_prototype_health_check():
 
 def test_session_factory_creates_async_sqlalchemy_sessions():
     """Future policy-gate routes receive async database sessions."""
-    factory = create_session_factory("postgresql+asyncpg://postgres:postgres@localhost:5432/ai_sales")
+    pytest.importorskip("psycopg", reason="psycopg is installed by the Python 3.13 production image")
+    factory = create_session_factory("postgresql+psycopg://runtime:password@localhost:5432/ai_sales")
 
     assert factory.class_ is AsyncSession

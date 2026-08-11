@@ -7,12 +7,14 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+from pydantic import ValidationError
 
 from telegram_connector import (
     EncryptedSessionStore,
     QuarantinedUpload,
     SessionMaterial,
     SessionQuarantineProcessor,
+    UnsafeQuarantinedUpload,
 )
 
 
@@ -34,10 +36,10 @@ class FailingAdapter(ConvertingAdapter):
 def make_upload(tmp_path: Path, original_name: str) -> QuarantinedUpload:
     original_path = tmp_path / original_name
     original_path.write_bytes(b"highly sensitive uploaded session")
-    return QuarantinedUpload(
+    return QuarantinedUpload.capture(
         upload_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
         original_path=original_path,
-        material=SessionMaterial(adapter="tdata", payload=original_path.read_bytes(), credentials={}),
+        adapter="tdata",
     )
 
 
@@ -51,7 +53,7 @@ def test_successful_conversion_removes_upload_and_logs_only_safe_metadata(tmp_pa
     upload = make_upload(tmp_path, "customer-export.tdata")
     processor = SessionQuarantineProcessor(
         ConvertingAdapter(),
-        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        EncryptedSessionStore.test_store({1: b"s" * 32}, active_key_version=1),
         quarantine_root=tmp_path,
     )
 
@@ -70,7 +72,7 @@ def test_failed_conversion_still_removes_upload_and_logs_only_safe_metadata(tmp_
     upload = make_upload(tmp_path, "customer-export.tdata")
     processor = SessionQuarantineProcessor(
         FailingAdapter(),
-        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        EncryptedSessionStore.test_store({1: b"s" * 32}, active_key_version=1),
         quarantine_root=tmp_path,
     )
 
@@ -92,14 +94,14 @@ def test_outside_quarantine_root_is_refused_without_deleting_external_file(tmp_p
     quarantine_root.mkdir()
     outside_upload = tmp_path / "external-session.tdata"
     outside_upload.write_bytes(b"external sensitive upload")
-    upload = QuarantinedUpload(
+    upload = QuarantinedUpload.capture(
         upload_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
         original_path=outside_upload,
-        material=SessionMaterial(adapter="tdata", payload=b"external sensitive upload", credentials={}),
+        adapter="tdata",
     )
     processor = SessionQuarantineProcessor(
         NeverConvertAdapter(),
-        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        EncryptedSessionStore.test_store({1: b"s" * 32}, active_key_version=1),
         quarantine_root=quarantine_root,
     )
 
@@ -124,14 +126,19 @@ def test_symlinked_quarantine_upload_is_refused_without_deleting_target(tmp_path
         symlink_path.symlink_to(external_target)
     except OSError as error:
         pytest.skip(f"symlink creation is unavailable on this platform: {error}")
-    upload = QuarantinedUpload(
+    upload = QuarantinedUpload.model_construct(
         upload_id=UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
         original_path=symlink_path,
-        material=SessionMaterial(adapter="tdata", payload=b"external sensitive upload", credentials={}),
+        adapter="tdata",
+        credentials=(),
+        expected_size=0,
+        expected_sha256=b"0" * 32,
+        expected_device=0,
+        expected_inode=0,
     )
     processor = SessionQuarantineProcessor(
         NeverConvertAdapter(),
-        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        EncryptedSessionStore.test_store({1: b"s" * 32}, active_key_version=1),
         quarantine_root=quarantine_root,
     )
 
@@ -152,7 +159,7 @@ def test_regular_upload_is_accepted_when_reparse_attributes_are_unavailable(tmp_
     upload = make_upload(tmp_path, "customer-export.tdata")
     processor = SessionQuarantineProcessor(
         ConvertingAdapter(),
-        EncryptedSessionStore({1: b"s" * 32}, active_key_version=1),
+        EncryptedSessionStore.test_store({1: b"s" * 32}, active_key_version=1),
         quarantine_root=tmp_path,
     )
 
@@ -160,3 +167,51 @@ def test_regular_upload_is_accepted_when_reparse_attributes_are_unavailable(tmp_
 
     assert reference.key_version == 1
     assert not upload.original_path.exists()
+
+
+def test_quarantined_upload_rejects_an_independent_material_payload(tmp_path):
+    """Accepting both a path and caller-provided bytes lets conversion differ from the file being deleted."""
+    original_path = tmp_path / "registered.session"
+    original_path.write_bytes(b"verified upload bytes")
+
+    with pytest.raises(ValidationError):
+        QuarantinedUpload(
+            original_path=original_path,
+            adapter="tdata",
+            material=SessionMaterial(adapter="tdata", payload=b"different bytes", credentials={}),
+        )
+
+
+def test_processor_reads_and_verifies_the_registered_file_before_conversion(tmp_path):
+    """Replacing a registered upload before conversion must fail closed and still remove the quarantine file."""
+
+    class RecordingAdapter:
+        name = "tdata"
+
+        def __init__(self) -> None:
+            self.payloads: list[bytes] = []
+
+        async def probe(self, material: SessionMaterial):
+            raise AssertionError("probe is not used")
+
+        async def convert(self, material: SessionMaterial) -> bytes:
+            self.payloads.append(material.payload)
+            return b"converted"
+
+    original_path = tmp_path / "registered.session"
+    original_path.write_bytes(b"verified upload bytes")
+    assert hasattr(QuarantinedUpload, "capture"), "server-side upload capture is missing"
+    upload = QuarantinedUpload.capture(original_path=original_path, adapter="tdata")
+    original_path.write_bytes(b"replacement payload")
+    adapter = RecordingAdapter()
+    processor = SessionQuarantineProcessor(
+        adapter,
+        EncryptedSessionStore.test_store({1: b"s" * 32}, active_key_version=1),
+        quarantine_root=tmp_path,
+    )
+
+    with pytest.raises(UnsafeQuarantinedUpload):
+        asyncio.run(processor.convert_and_store(UUID(int=1), upload))
+
+    assert adapter.payloads == []
+    assert not original_path.exists()
