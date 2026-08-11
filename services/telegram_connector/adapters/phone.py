@@ -132,6 +132,39 @@ class _ChallengeStore:
                 self._clear_secrets(current)
             return _step(state, challenge_id, current.expires_at)
 
+    async def qr_url(self, challenge_id: UUID, owner_id: object) -> str:
+        """Read a QR deep link only for its bound, still-live challenge owner."""
+        self._require_owner(owner_id)
+        async with self._lock:
+            self._prune_locked()
+            challenge = self._active.get(challenge_id)
+            if (
+                challenge is None
+                or challenge.owner_id != owner_id
+                or challenge.state != "code_sent"
+            ):
+                raise ValueError("QR challenge unavailable")
+            url = getattr(challenge.qr_token, "url", None)
+            if not isinstance(url, str) or not url:
+                raise ValueError("QR challenge unavailable")
+            return url
+
+    async def status(self, challenge_id: UUID, owner_id: object) -> AuthStep:
+        """Observe challenge state without claiming its live Telegram operation."""
+        self._require_owner(owner_id)
+        async with self._lock:
+            self._prune_locked()
+            challenge = self._active.get(challenge_id)
+            if challenge is None:
+                expired = self._expired.get(challenge_id)
+                if expired is not None and expired[1] == owner_id:
+                    return _step("expired", challenge_id, expired[0])
+                return _step("failed", challenge_id, self._utc_now())
+            if challenge.owner_id != owner_id:
+                return _step("failed", challenge_id, challenge.expires_at)
+            state = "code_sent" if challenge.state == "processing" else challenge.state
+            return _step(state, challenge_id, challenge.expires_at)
+
     def _prune_locked(self) -> None:
         now = self._utc_now()
         for challenge_id, challenge in tuple(self._active.items()):

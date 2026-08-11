@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ConnectionMethod(StrEnum):
@@ -41,3 +41,9 @@ class AttemptView(BaseModel):
         if self.expires_at.tzinfo is None or self.expires_at.utcoffset() is None:
             raise ValueError("attempt expiry must be timezone-aware")
         object.__setattr__(self, "expires_at", self.expires_at.astimezone(UTC))
+
+
+class QrStartView(AttemptView):
+    """The one response that carries a short-lived QR deep link for scanning."""
+
+    qr_url: str = Field(min_length=1, max_length=4096, repr=False)

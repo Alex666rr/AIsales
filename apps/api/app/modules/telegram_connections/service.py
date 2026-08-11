@@ -9,7 +9,7 @@ from telegram_connector.adapters.phone import AuthStep
 
 from app.modules.policy.models import PlatformOwnerPrincipal
 
-from .models import AttemptStatus, AttemptView, ConnectionMethod
+from .models import AttemptStatus, AttemptView, ConnectionMethod, QrStartView
 
 
 class PhoneAttemptAdapter(Protocol):
@@ -19,8 +19,9 @@ class PhoneAttemptAdapter(Protocol):
 
 
 class QrAttemptAdapter(Protocol):
-    async def start(self, owner_id: UUID) -> AuthStep: ...
-    async def complete(self, challenge_id: UUID, owner_id: UUID) -> AuthStep: ...
+    async def start_background(self, owner_id: UUID) -> tuple[AuthStep, str]: ...
+
+    async def status(self, challenge_id: UUID, owner_id: UUID) -> AuthStep: ...
 
 
 _PHONE_STATES = {
@@ -57,12 +58,14 @@ class ConnectionAttemptService:
             _PHONE_STATES,
         )
 
-    async def start_qr(self, owner: PlatformOwnerPrincipal) -> AttemptView:
-        return _view(await self._qr.start(owner.principal_id), ConnectionMethod.QR, _QR_STATES)
+    async def start_qr(self, owner: PlatformOwnerPrincipal) -> QrStartView:
+        step, qr_url = await self._qr.start_background(owner.principal_id)
+        view = _view(step, ConnectionMethod.QR, _QR_STATES)
+        return QrStartView(**view.model_dump(), qr_url=qr_url)
 
     async def qr_status(self, owner: PlatformOwnerPrincipal, attempt_id: UUID) -> AttemptView:
         return _view(
-            await self._qr.complete(attempt_id, owner.principal_id),
+            await self._qr.status(attempt_id, owner.principal_id),
             ConnectionMethod.QR,
             _QR_STATES,
         )

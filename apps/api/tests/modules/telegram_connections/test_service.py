@@ -49,15 +49,15 @@ class FakeQrAdapter:
         self.challenge_id = uuid4()
         self.expires_at = datetime.now(UTC) + timedelta(minutes=2)
 
-    async def start(self, owner_id: UUID) -> AuthStep:
+    async def start_background(self, owner_id: UUID) -> tuple[AuthStep, str]:
         return AuthStep(
             state="code_sent",
             challenge_id=self.challenge_id,
             expires_at=self.expires_at,
             safe_message="safe",
-        )
+        ), "tg://login?token=QR-SENTINEL"
 
-    async def complete(self, challenge_id: UUID, owner_id: UUID) -> AuthStep:
+    async def status(self, challenge_id: UUID, owner_id: UUID) -> AuthStep:
         return AuthStep(
             state="authorized",
             challenge_id=challenge_id,
@@ -91,11 +91,12 @@ def test_other_owner_cannot_complete_phone_attempt() -> None:
     assert result.status is AttemptStatus.FAILED
 
 
-def test_qr_attempt_is_reported_as_pending_without_payload() -> None:
+def test_qr_attempt_returns_only_the_required_short_lived_payload() -> None:
     service = ConnectionAttemptService(phone=FakePhoneAdapter(), qr=FakeQrAdapter())
 
     started = asyncio.run(service.start_qr(PlatformOwnerPrincipal(principal_id=uuid4())))
 
     assert started.method is ConnectionMethod.QR
     assert started.status is AttemptStatus.PENDING
-    assert "token" not in repr(started).lower()
+    assert started.qr_url == "tg://login?token=QR-SENTINEL"
+    assert "QR-SENTINEL" not in repr(started)

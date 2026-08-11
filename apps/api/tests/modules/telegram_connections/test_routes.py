@@ -9,7 +9,7 @@ from fastapi import HTTPException
 
 from app.main import create_app
 from app.modules.policy.models import PlatformOwnerPrincipal
-from app.modules.telegram_connections.models import AttemptStatus, AttemptView, ConnectionMethod
+from app.modules.telegram_connections.models import AttemptStatus, AttemptView, ConnectionMethod, QrStartView
 from app.modules.telegram_connections.routes import build_connection_router
 
 
@@ -66,8 +66,14 @@ class FakeAttempts:
     async def submit_password(self, owner, attempt_id, password: str) -> AttemptView:
         return AttemptView(attempt_id=attempt_id, method=ConnectionMethod.PHONE, status=AttemptStatus.AUTHORIZED, expires_at=datetime.now(UTC))
 
-    async def start_qr(self, owner) -> AttemptView:
-        return AttemptView(attempt_id=uuid4(), method=ConnectionMethod.QR, status=AttemptStatus.PENDING, expires_at=datetime.now(UTC) + timedelta(minutes=2))
+    async def start_qr(self, owner) -> QrStartView:
+        return QrStartView(
+            attempt_id=uuid4(),
+            method=ConnectionMethod.QR,
+            status=AttemptStatus.PENDING,
+            expires_at=datetime.now(UTC) + timedelta(minutes=2),
+            qr_url="tg://login?token=QR-SENTINEL",
+        )
 
     async def qr_status(self, owner, attempt_id) -> AttemptView:
         return AttemptView(attempt_id=attempt_id, method=ConnectionMethod.QR, status=AttemptStatus.PENDING, expires_at=datetime.now(UTC))
@@ -111,3 +117,16 @@ def test_phone_route_validation_never_echoes_rejected_phone() -> None:
 
     assert status == 422
     assert b"not-a-phone-secret" not in body
+
+
+def test_qr_start_route_returns_short_lived_link_only_in_its_start_response() -> None:
+    async def principal() -> PlatformOwnerPrincipal:
+        return PlatformOwnerPrincipal(principal_id=uuid4())
+
+    application = create_app()
+    application.include_router(build_connection_router(FakeAttempts(), principal_dependency=principal))
+
+    status, body = asyncio.run(asgi_post(application, "/telegram/connections/qr/start", {}))
+
+    assert status == 201
+    assert json.loads(body)["qr_url"] == "tg://login?token=QR-SENTINEL"

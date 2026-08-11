@@ -6,6 +6,7 @@ import stat
 import tarfile
 import zipfile
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -64,10 +65,10 @@ class FakeUserClient:
     async def export_session(self) -> bytes:
         return b"TELETHON_STRING_SESSION\x00\x01one-time-session"
 
-    async def request_qr(self) -> str:
-        return "qr-login-token"
+    async def request_qr(self) -> object:
+        return SimpleNamespace(url="tg://login?token=QR-SENTINEL")
 
-    async def complete_qr(self, token: str) -> tuple[int, str]:
+    async def complete_qr(self, token: object) -> tuple[int, str]:
         if self.qr_result == "expired":
             raise QrExpired(f"expired {token}")
         return self.qr_result  # type: ignore[return-value]
@@ -225,6 +226,30 @@ def test_qr_expiry_requires_a_fresh_challenge_before_retrying():
     assert first.state == "code_sent"
     assert expired.state == "expired"
     assert replay.state == "failed"
+
+
+def test_qr_background_wait_starts_before_status_poll_and_claims_session_once():
+    """Polling after scan is too late: the wait must start with the QR challenge itself."""
+
+    async def scenario():
+        client = BlockingUserClient(block="qr")
+        adapter = QRAdapter(lambda: client)
+        start, qr_url = await adapter.start_background(OWNER_A)
+        await client.started.wait()
+        pending = await adapter.status(start.challenge_id, OWNER_A)
+        client.release.set()
+        await asyncio.sleep(0)
+        authorized = await adapter.status(start.challenge_id, OWNER_A)
+        identity, payload = await adapter.consume_authorized_session(start.challenge_id, OWNER_A)
+        return start, qr_url, pending, authorized, identity, payload
+
+    start, qr_url, pending, authorized, identity, payload = run(scenario())
+
+    assert qr_url == "tg://login?token=QR-SENTINEL"
+    assert "QR-SENTINEL" not in repr(start)
+    assert pending.state == "code_sent"
+    assert authorized.state == "authorized"
+    assert (identity, payload) == (42, b"TELETHON_STRING_SESSION\x00\x01one-time-session")
 
 
 def test_phone_continuations_reject_a_different_authenticated_owner():

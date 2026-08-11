@@ -153,6 +153,14 @@ class TelethonQrAuthorizationClient:
             raise RuntimeError("telegram QR authorization unavailable")
         return _identity(await wait())
 
+    async def export_session(self) -> bytes:
+        try:
+            from telethon.sessions import StringSession
+
+            return _canonical_session(StringSession.save(self._client.session))
+        except Exception:
+            raise RuntimeError("telegram authorization unavailable") from None
+
 
 class TelethonRuntimeClientFactory:
     """Create a concrete client from an account-bound encrypted session reference."""

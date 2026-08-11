@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import Protocol, TypeVar
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.policy.models import PlatformOwnerPrincipal
 
-from .models import AttemptView
+from .models import AttemptView, QrStartView
 
 
 class PhoneStartRequest(BaseModel):
@@ -49,6 +49,14 @@ class PhoneAttemptRoutes(Protocol):
         password: str,
     ) -> AttemptView: ...
 
+    async def start_qr(self, owner: PlatformOwnerPrincipal) -> QrStartView: ...
+
+    async def qr_status(
+        self,
+        owner: PlatformOwnerPrincipal,
+        attempt_id: UUID,
+    ) -> AttemptView: ...
+
 
 PrincipalDependency = Callable[[], Awaitable[PlatformOwnerPrincipal]]
 
@@ -84,10 +92,26 @@ def build_connection_router(
     ) -> AttemptView:
         return await _safe_call(attempts.submit_password(principal, attempt_id, request.password))
 
+    @router.post("/qr/start", response_model=QrStartView, status_code=status.HTTP_201_CREATED)
+    async def start_qr(
+        principal: PlatformOwnerPrincipal = Depends(principal_dependency),
+    ) -> QrStartView:
+        return await _safe_call(attempts.start_qr(principal))
+
+    @router.get("/{attempt_id}/qr/status", response_model=AttemptView)
+    async def qr_status(
+        attempt_id: UUID,
+        principal: PlatformOwnerPrincipal = Depends(principal_dependency),
+    ) -> AttemptView:
+        return await _safe_call(attempts.qr_status(principal, attempt_id))
+
     return router
 
 
-async def _safe_call(operation: Awaitable[AttemptView]) -> AttemptView:
+_RouteView = TypeVar("_RouteView", bound=AttemptView)
+
+
+async def _safe_call(operation: Awaitable[_RouteView]) -> _RouteView:
     try:
         return await operation
     except HTTPException:
