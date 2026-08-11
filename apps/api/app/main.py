@@ -3,6 +3,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
@@ -31,8 +32,19 @@ def create_app(*, composition=None) -> FastAPI:
     api.add_exception_handler(RequestValidationError, safe_request_validation_error_handler)
 
     @api.get("/healthz")
-    async def health_check() -> dict[str, str]:
-        return {"status": "ok", "environment": "prototype"}
+    async def health_check() -> JSONResponse:
+        try:
+            ready = composition is not None and await run_in_threadpool(
+                composition.database_is_ready
+            )
+        except Exception:
+            ready = False
+        if not ready:
+            return JSONResponse(status_code=503, content={"status": "unavailable"})
+        return JSONResponse(
+            status_code=200,
+            content={"status": "ok", "environment": "prototype"},
+        )
 
     if composition is not None:
         api.include_router(composition.policy_router)

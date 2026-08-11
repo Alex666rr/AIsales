@@ -1,0 +1,135 @@
+# Task 2 report: Railway migration and API contract
+
+## RED evidence
+
+Added `test_railway_deployment_guide_keeps_owner_credentials_out_of_api` before
+creating the deployment guide. Ran:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q
+```
+
+Result: `1 failed, 1 passed`. The new test failed as intended with
+`AssertionError: Railway Stage 0 deployment guide is missing`.
+
+## GREEN evidence
+
+Created `docs/deployment/railway-stage-0.md` with the exact `Postgres`,
+one-shot `Migrations`, and `AIsales` contract. The guide documents the
+owner-only Alembic URL, runtime-only API URL, the `/healthz` check, Railway
+references, and required value formats.
+
+Ran the required targeted tests with a workspace-local pytest base directory:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py services/telegram_connector/tests/test_bootstrap.py -q --basetemp .pytest-tmp\task2
+```
+
+Result: `8 passed in 3.22s`. Also ran `git diff --check` before committing;
+it returned exit code 0.
+
+## Self-review
+
+- The API guide section has only the `ai_sales_runtime` psycopg URL and no
+  owner-password variable.
+- The owner password is scoped to `Migrations`; it is not a shared Railway
+  variable.
+- The runtime password is the only database secret shared by `Migrations` and
+  `AIsales`.
+- No credentials, tokens, or generated secret values are recorded.
+- No Railway service was changed and no deployment was initiated.
+
+## Commit
+
+`3c80361 docs: add railway stage 0 deployment contract`
+
+## Concerns
+
+At original completion, `infra/Dockerfile` neither copied
+`infra/postgres/railway/bootstrap_roles.sh` into `/workspace` nor installed
+the PostgreSQL `psql` client. Fix round 1 resolves that repository prerequisite
+without changing Railway or initiating a deployment.
+
+## Fix round 1 evidence
+
+Added `test_migrations_image_includes_bootstrap_dependencies_and_uses_sh`
+before changing the image or guide. Ran:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q
+```
+
+Result: `1 failed, 2 passed`. The new test failed as intended because the
+Dockerfile did not contain `postgresql-client`.
+
+The minimal fix copies only `infra/postgres/railway`, installs
+`postgresql-client`, and runs the bootstrap script with `sh` so it does not
+depend on the script's executable bit. The documented Alembic command remains
+unchanged.
+
+Verification:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q --basetemp .pytest-tmp\task2-fix-targeted
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest -q --basetemp .pytest-tmp\task2-fix-full
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m compileall -q services apps
+```
+
+Results: targeted contract test `3 passed in 0.34s`; full relevant suite
+`225 passed, 3 skipped in 5.28s`; compileall exited 0; and `git diff --check`
+exited 0. Docker is not installed in this execution environment, so an image
+build could not be run here.
+
+## Fix round 2 evidence
+
+Added two tests before updating the guide: one requires both repository-backed
+services to select `infra/Dockerfile` through `RAILWAY_DOCKERFILE_PATH`; the
+other is an opt-in Docker build and runtime contract. The latter builds the
+image without database credentials or a database connection, then verifies
+that `/workspace/infra/postgres/railway/bootstrap_roles.sh` and `psql` exist.
+
+RED command:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q --basetemp .pytest-tmp\task2-fix2-red
+```
+
+Result: `1 failed, 3 passed, 1 skipped`. The new documented-build-settings
+test failed as intended because neither service declared
+`RAILWAY_DOCKERFILE_PATH`.
+
+GREEN command:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q -rs --basetemp .pytest-tmp\task2-fix2-skip
+```
+
+Result: `4 passed, 1 skipped in 0.35s`. The skip is explicit:
+`Docker is not installed`. When Docker is present, the same test builds and
+runs the image contract; it does not require secrets or a PostgreSQL service.
+
+Full-suite verification used `pytest -q --basetemp .pytest-tmp\task2-fix2-full`
+and returned `226 passed, 4 skipped in 5.23s`.
+
+## Fix round 3 evidence
+
+Added `test_ci_requires_the_docker_migrations_image_contract` before adding
+the workflow. Its RED run failed as intended with `AssertionError: Docker
+image contract workflow is missing`.
+
+Added `.github/workflows/railway-migrations-image.yml`. On every pull request
+and push it uses `ubuntu-latest`, installs the project test extra, and runs
+the exact Docker build/runtime contract test. This makes the test non-optional
+in a Docker-capable environment without needing database credentials or a
+running database. The deployment guide now documents that CI enforcement.
+
+GREEN verification:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q -rs --basetemp .pytest-tmp\task2-fix3-green
+```
+
+Result: `5 passed, 1 skipped in 0.35s`; the skip is explicitly `Docker is not
+installed`. The full suite returned `227 passed, 4 skipped in 5.26s`. The
+workflow itself cannot run locally, but it targets GitHub's
+Docker-capable `ubuntu-latest` runner.
