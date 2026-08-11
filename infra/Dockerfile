@@ -16,4 +16,4 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir .
 
-CMD ["uvicorn", "app.main:create_app_from_environment", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "exec uvicorn app.main:create_app_from_environment --factory --host 0.0.0.0 --port \"${PORT:-8000}\""]

@@ -107,6 +107,25 @@ def test_telegram_state_migration_renders_schema_and_runtime_privileges():
     assert "CREATE UNIQUE INDEX uq_telegram_proxies_one_default" in sql
 
 
+def test_runtime_health_migration_exposes_only_alembic_revision_reads():
+    """The restricted runtime role must read migration state without changing it."""
+    module = import_module("apps.api.app.db.migrations.versions.0003_runtime_health")
+    output = StringIO()
+    context = MigrationContext.configure(
+        url="postgresql+psycopg://migration.invalid/prototype",
+        opts={"as_sql": True, "literal_binds": True, "output_buffer": output},
+    )
+    module.op = Operations(context)
+    module.upgrade()
+    sql = output.getvalue()
+
+    assert "REVOKE ALL ON TABLE public.alembic_version FROM PUBLIC" in sql
+    assert "GRANT SELECT ON TABLE public.alembic_version TO ai_sales_runtime" in sql
+    assert "INSERT" not in sql
+    assert "UPDATE" not in sql
+    assert "DELETE" not in sql
+
+
 def test_built_wheel_imports_top_level_connector_outside_source_tree(tmp_path):
     """The built distribution exposes telegram_connector without source-tree imports."""
     source_tree = tmp_path / "source"

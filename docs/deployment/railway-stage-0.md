@@ -45,13 +45,12 @@ The Postgres values are Railway references, not copied credentials.
 Use this start command:
 
 ```sh
-set -eu
-sh /workspace/infra/postgres/railway/bootstrap_roles.sh
-DATABASE_URL="postgresql+psycopg://ai_sales_owner:${POSTGRES_OWNER_PASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}" \
-  alembic -c /workspace/alembic.ini upgrade head
+sh -c 'set -eu; sh /workspace/infra/postgres/railway/bootstrap_roles.sh; export DATABASE_URL="postgresql+psycopg://ai_sales_owner:${POSTGRES_OWNER_PASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}"; exec alembic -c /workspace/alembic.ini upgrade head'
 ```
 
-The command first reconciles the two roles through Railway's managed Postgres
+Railway launches a custom start command in exec form, so the explicit `sh -c`
+wrapper is required for `set -eu`, variable expansion, and the scoped
+`DATABASE_URL` assignment. The command first reconciles the two roles through Railway's managed Postgres
 connection. It builds the owner URL only for the Alembic command, runs
 `alembic -c /workspace/alembic.ini upgrade head`, and exits successfully when
 the migration succeeds. Do not configure a restart loop for this service.
@@ -84,16 +83,23 @@ role only:
 never commit them or paste their values into this repository. The API has no
 other database URL and no administrative database variables.
 
+Railway injects `PORT` for the API service. Do not set it manually. The image
+starts Uvicorn through `sh -c`, passes `${PORT:-8000}` as its port, and uses
+`8000` only when running outside Railway without `PORT`.
+
 Set the API health check path to `/healthz`. A healthy response is the API's
-readiness signal after the one-shot migration has completed.
+readiness signal only when PostgreSQL is reachable and its Alembic revision is
+the current application head. Database errors and missing or stale migrations
+return an unavailable response.
 
 ## Valid value construction
 
 Generate `SESSION_ENCRYPTION_KEY` from exactly 32 random bytes and URL-safe
 Base64-encode those bytes; do not use a passphrase or a shorter key. Generate
-`PLATFORM_OWNER_ID` as UUID version 4. Set `CURRENT_TERMS_REVISION` exactly to
-`v1` for the initial deployment. Enter the two Telegram variables in Railway
-before intentionally deploying the API.
+`PLATFORM_OWNER_ID` as UUID version 4. Generate `PLATFORM_OWNER_TOKEN` from at
+least 32 random bytes and keep its encoded value at least 32 characters long.
+Set `CURRENT_TERMS_REVISION` exactly to `v1` for the initial deployment. Enter
+the two Telegram variables in Railway before intentionally deploying the API.
 
 ## First deployment handoff
 

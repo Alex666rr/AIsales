@@ -7,6 +7,7 @@ import json
 from uuid import UUID
 
 from sqlalchemy import create_engine
+from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 
 from app.config import ApiSettings
@@ -18,7 +19,7 @@ from telegram_connector.persistence import create_gateway_schema
 
 ACCOUNT = UUID(int=701)
 ORGANIZATION = UUID(int=702)
-OWNER = UUID(int=703)
+OWNER_V4 = UUID("12345678-1234-4234-9234-123456789abc")
 
 try:
     composition_module = import_module("app.composition")
@@ -70,6 +71,44 @@ async def asgi_post_json(application, path: str, payload: dict, headers=()):
     return start["status"], response
 
 
+async def asgi_get(application, path: str):
+    messages = []
+    received = False
+
+    async def receive():
+        nonlocal received
+        if received:
+            return {"type": "http.disconnect"}
+        received = True
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("ascii"),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [],
+        "client": ("127.0.0.1", 1),
+        "server": ("testserver", 80),
+    }
+    await application(scope, receive, send)
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    response = b"".join(
+        message.get("body", b"")
+        for message in messages
+        if message["type"] == "http.response.body"
+    )
+    return start["status"], response
+
+
 def settings() -> ApiSettings:
     key = base64.urlsafe_b64encode(b"k" * 32).decode("ascii")
     return ApiSettings(
@@ -77,8 +116,8 @@ def settings() -> ApiSettings:
         session_encryption_key=key,
         telegram_api_id=12345,
         telegram_api_hash="test-api-hash",
-        platform_owner_id=OWNER,
-        platform_owner_token="test-owner-token",
+        platform_owner_id=OWNER_V4,
+        platform_owner_token="test-owner-token-that-is-at-least-32-characters",
         current_terms_revision="terms-2026-08",
     )
 
@@ -96,6 +135,7 @@ def build_test_composition(tmp_path):
         settings(),
         sync_sessions=sessions,
         async_sessions=UnusedAsyncSessions(),
+        sync_engine=engine,
     )
     return engine, composition
 
@@ -179,3 +219,44 @@ def test_production_app_factory_requires_complete_environment(monkeypatch):
         pass
     else:
         raise AssertionError("production composition accepted incomplete configuration")
+
+
+def test_health_check_fails_closed_without_database_composition():
+    """An uncomposed API must not report ready when no database can be checked."""
+    status, body = asyncio.run(asgi_get(create_app(), "/healthz"))
+
+    assert status == 503
+    assert json.loads(body) == {"status": "unavailable"}
+
+
+def test_health_check_requires_database_at_current_migration_revision(tmp_path):
+    """Reachable storage with a stale Alembic revision is not ready to serve requests."""
+    engine, composition = build_test_composition(tmp_path)
+    application = create_app(composition=composition)
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("CREATE TABLE alembic_version (version_num VARCHAR(32))"))
+            connection.execute(
+                text("INSERT INTO alembic_version (version_num) VALUES ('0001_policy_gate')")
+            )
+
+        stale_status, stale_body = asyncio.run(asgi_get(application, "/healthz"))
+
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE alembic_version SET version_num = "
+                    "'0003_runtime_health'"
+                )
+            )
+        current_status, current_body = asyncio.run(asgi_get(application, "/healthz"))
+
+        assert stale_status == 503
+        assert json.loads(stale_body) == {"status": "unavailable"}
+        assert current_status == 200
+        assert json.loads(current_body) == {
+            "status": "ok",
+            "environment": "prototype",
+        }
+    finally:
+        engine.dispose()

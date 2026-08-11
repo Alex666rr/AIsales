@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hmac
 from dataclasses import dataclass
 from typing import Annotated, Callable
 from uuid import UUID
 
 from fastapi import Header, HTTPException, status
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -29,6 +27,7 @@ from telegram_connector.adapters import (
     TelethonStringAdapter,
     VettedTelethonSessionConverter,
 )
+from telegram_connector.config import decode_session_encryption_key
 from telegram_connector.gateway import _InboundDecoder, _compose_registered_gateway
 from telegram_connector.persistence import (
     ProxyCredentialCipher,
@@ -63,6 +62,9 @@ from .modules.policy.service import (
     PolicyGate,
     PolicyProtectedMessageLoader,
 )
+
+
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0003_runtime_health"})
 
 
 class TelegramPolicyContextIssuer:
@@ -173,6 +175,16 @@ class ApplicationComposition:
     sync_engine: Engine | None = None
     async_engine: AsyncEngine | None = None
 
+    def database_is_ready(self) -> bool:
+        """Require a reachable database whose Alembic revision is current."""
+        if self.sync_engine is None:
+            return False
+        with self.sync_engine.connect() as connection:
+            revisions = set(
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalars()
+            )
+        return revisions == REQUIRED_SCHEMA_REVISIONS
+
     async def close(self) -> None:
         if self.async_engine is not None:
             await self.async_engine.dispose()
@@ -189,7 +201,7 @@ def build_application_composition(
     async_engine: AsyncEngine | None = None,
 ) -> ApplicationComposition:
     """Bind reviewed concrete services; tests inject only persistence/client boundaries."""
-    key = _decode_encryption_key(settings.session_encryption_key.get_secret_value())
+    key = decode_session_encryption_key(settings.session_encryption_key.get_secret_value())
     key_ring = {settings.session_encryption_key_version: key}
     account_repository = SqlAlchemyTelegramAccountRepository(sync_sessions)
     session_store = EncryptedSessionStore(
@@ -292,18 +304,3 @@ def create_production_composition(
         sync_engine=sync_engine,
         async_engine=async_engine,
     )
-
-
-def _decode_encryption_key(encoded: str) -> bytes:
-    try:
-        padding = "=" * (-len(encoded) % 4)
-        value = base64.b64decode(
-            encoded + padding,
-            altchars=b"-_",
-            validate=True,
-        )
-        if len(value) not in {16, 24, 32}:
-            raise ValueError
-        return value
-    except (binascii.Error, UnicodeError, ValueError):
-        raise ValueError("invalid session encryption key") from None

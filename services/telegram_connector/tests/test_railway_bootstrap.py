@@ -1,3 +1,4 @@
+import json
 import re
 import shutil
 import subprocess
@@ -32,8 +33,15 @@ def test_bootstrap_requires_inputs_and_reconciles_roles():
     assert "IF NOT EXISTS" in script
     assert "ALTER ROLE ai_sales_owner PASSWORD" in script
     assert "ALTER ROLE ai_sales_runtime PASSWORD" in script
+    restrictive_attributes = (
+        "WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+        "NOINHERIT NOREPLICATION NOBYPASSRLS"
+    )
+    assert f"ALTER ROLE ai_sales_owner {restrictive_attributes}" in script
+    assert f"ALTER ROLE ai_sales_runtime {restrictive_attributes}" in script
     assert "GRANT CONNECT, CREATE ON DATABASE" in script
     assert "GRANT CONNECT ON DATABASE" in script
+    assert "GRANT USAGE, CREATE ON SCHEMA public TO ai_sales_owner" in script
 
 
 def test_railway_deployment_guide_keeps_owner_credentials_out_of_api():
@@ -60,6 +68,40 @@ def test_migrations_image_includes_bootstrap_dependencies_and_uses_sh():
     assert "postgresql-client" in dockerfile
     assert "COPY infra/postgres/railway ./infra/postgres/railway" in dockerfile
     assert "sh /workspace/infra/postgres/railway/bootstrap_roles.sh" in guide
+
+
+def test_api_image_expands_railway_port_through_an_explicit_shell():
+    """Docker exec form alone would pass `${PORT}` literally and ignore Railway's port."""
+    dockerfile = (PROJECT_ROOT / "infra" / "Dockerfile").read_text(encoding="utf-8")
+    command_line = next(
+        line.removeprefix("CMD ")
+        for line in dockerfile.splitlines()
+        if line.startswith("CMD ")
+    )
+
+    command = json.loads(command_line)
+
+    assert command[:2] == ["sh", "-c"]
+    assert "exec uvicorn" in command[2]
+    assert '--port "${PORT:-8000}"' in command[2]
+
+
+def test_guide_wraps_migrations_start_command_and_documents_port():
+    """Railway's exec-form start command must delegate shell syntax to `sh -c`."""
+    guide = (PROJECT_ROOT / "docs" / "deployment" / "railway-stage-0.md").read_text(
+        encoding="utf-8"
+    )
+    migrations_section = guide.split("## Migrations", maxsplit=1)[1].split(
+        "## AIsales", maxsplit=1
+    )[0]
+    api_section = guide.split("## AIsales", maxsplit=1)[1].split(
+        "## Valid value construction", maxsplit=1
+    )[0]
+
+    assert "sh -c 'set -eu;" in migrations_section
+    assert "exec alembic -c /workspace/alembic.ini upgrade head" in migrations_section
+    assert "Railway injects `PORT`" in api_section
+    assert "`${PORT:-8000}`" in api_section
 
 
 def test_guide_selects_the_infra_dockerfile_for_each_repository_service():
@@ -163,3 +205,8 @@ def test_ci_requires_the_docker_migrations_image_contract():
         "services/telegram_connector/tests/test_railway_bootstrap.py::"
         "test_built_migrations_image_contains_bootstrap_script_and_psql"
     ) in workflow
+    assert "services:" in workflow
+    assert "image: postgres:18" in workflow
+    assert "test_railway_postgres_integration.py" in workflow
+    assert "POSTGRES_OWNER_PASSWORD:" in workflow
+    assert "POSTGRES_RUNTIME_PASSWORD:" in workflow
