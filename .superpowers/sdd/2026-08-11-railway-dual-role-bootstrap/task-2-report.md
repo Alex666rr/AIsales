@@ -45,9 +45,37 @@ it returned exit code 0.
 
 ## Concerns
 
-The current `infra/Dockerfile` neither copies `infra/postgres/railway/bootstrap_roles.sh`
-into `/workspace` nor installs the PostgreSQL `psql` client. Consequently, a
-Migrations service built from that image cannot yet run the documented
-bootstrap command. This task intentionally did not modify the Docker image or
-Railway configuration; resolve that prerequisite before an intentional
-deployment.
+At original completion, `infra/Dockerfile` neither copied
+`infra/postgres/railway/bootstrap_roles.sh` into `/workspace` nor installed
+the PostgreSQL `psql` client. Fix round 1 resolves that repository prerequisite
+without changing Railway or initiating a deployment.
+
+## Fix round 1 evidence
+
+Added `test_migrations_image_includes_bootstrap_dependencies_and_uses_sh`
+before changing the image or guide. Ran:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q
+```
+
+Result: `1 failed, 2 passed`. The new test failed as intended because the
+Dockerfile did not contain `postgresql-client`.
+
+The minimal fix copies only `infra/postgres/railway`, installs
+`postgresql-client`, and runs the bootstrap script with `sh` so it does not
+depend on the script's executable bit. The documented Alembic command remains
+unchanged.
+
+Verification:
+
+```powershell
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest services/telegram_connector/tests/test_railway_bootstrap.py -q --basetemp .pytest-tmp\task2-fix-targeted
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m pytest -q --basetemp .pytest-tmp\task2-fix-full
+& 'C:\Users\admin\Documents\Codex\2026-08-06\AIsales\.worktrees\stage-0-telegram-prototype\.venv\Scripts\python.exe' -m compileall -q services apps
+```
+
+Results: targeted contract test `3 passed in 0.34s`; full relevant suite
+`225 passed, 3 skipped in 5.28s`; compileall exited 0; and `git diff --check`
+exited 0. Docker is not installed in this execution environment, so an image
+build could not be run here.

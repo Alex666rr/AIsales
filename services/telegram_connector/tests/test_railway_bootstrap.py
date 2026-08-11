@@ -43,3 +43,15 @@ def test_railway_deployment_guide_keeps_owner_credentials_out_of_api():
     assert "postgresql+psycopg://ai_sales_owner:" in migrations_section
     assert "postgresql+psycopg://ai_sales_runtime:" in api_section
     assert "POSTGRES_OWNER_PASSWORD" not in api_section
+
+
+def test_migrations_image_includes_bootstrap_dependencies_and_uses_sh():
+    """A migration image without psql or the script cannot establish role boundaries."""
+    dockerfile = (PROJECT_ROOT / "infra" / "Dockerfile").read_text(encoding="utf-8")
+    guide = (PROJECT_ROOT / "docs" / "deployment" / "railway-stage-0.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "postgresql-client" in dockerfile
+    assert "COPY infra/postgres/railway ./infra/postgres/railway" in dockerfile
+    assert "sh /workspace/infra/postgres/railway/bootstrap_roles.sh" in guide

@@ -22,9 +22,9 @@ as a shared variable.
 ## Migrations
 
 Create a repository-backed service named `Migrations`. It is a one-shot job,
-not a long-running API. Its build artifact must include
+not a long-running API. The repository Dockerfile includes
 `/workspace/infra/postgres/railway/bootstrap_roles.sh` and the PostgreSQL
-`psql` client before it can use the start command below.
+`psql` client needed by the start command below.
 
 Set these service variables. Mark the passwords sealed. The Postgres values
 are Railway references, not copied credentials.
@@ -43,7 +43,7 @@ Use this start command:
 
 ```sh
 set -eu
-/workspace/infra/postgres/railway/bootstrap_roles.sh
+sh /workspace/infra/postgres/railway/bootstrap_roles.sh
 DATABASE_URL="postgresql+psycopg://ai_sales_owner:${POSTGRES_OWNER_PASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}" \
   alembic -c /workspace/alembic.ini upgrade head
 ```
