@@ -179,6 +179,7 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         paths = set(application.openapi()["paths"])
         assert {
             "/healthz",
+            "/auth/login",
             "/policy/ai-approvals",
             "/policy/ai-approvals/{approval_id}/revocations",
             "/telegram/connections/phone/start",
@@ -194,6 +195,7 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         assert type(composition.connection_repository).__name__ == "SqlAlchemyConnectionRepository"
         assert type(composition.proxy_repository).__name__ == "SqlAlchemyProxyAssignmentRepository"
         assert type(composition.gateway_repository).__name__ == "SqlAlchemyMessageDeliveryRepository"
+        assert type(composition.auth_repository).__name__ == "SqlAlchemyAuthRepository"
 
         status, body = asyncio.run(
             asgi_post_json(
