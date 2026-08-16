@@ -177,7 +177,16 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
     try:
         application = create_app(composition=composition)
         paths = set(application.openapi()["paths"])
-        assert {"/healthz", "/policy/ai-approvals", "/policy/ai-approvals/{approval_id}/revocations"} <= paths
+        assert {
+            "/healthz",
+            "/policy/ai-approvals",
+            "/policy/ai-approvals/{approval_id}/revocations",
+            "/telegram/connections/phone/start",
+            "/telegram/connections/{attempt_id}/phone/confirm",
+            "/telegram/connections/{attempt_id}/phone/password",
+            "/telegram/connections/tdata/tickets",
+            "/telegram/connections/tdata/tickets/{ticket_id}/handoff",
+        } <= paths
         assert composition.adapter_registry.names == (
             "phone", "qr", "tdata", "telethon_file", "telethon_string", "bot"
         )
@@ -203,6 +212,16 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         )
         assert status == 401
         assert b"test-owner-token" not in body
+
+        status, body = asyncio.run(
+            asgi_post_json(
+                application,
+                "/telegram/connections/phone/start",
+                {"phone": "+12025550123"},
+            )
+        )
+        assert status == 401
+        assert b"+12025550123" not in body
     finally:
         engine.dispose()
 
@@ -246,7 +265,7 @@ def test_health_check_requires_database_at_current_migration_revision(tmp_path):
             connection.execute(
                 text(
                     "UPDATE alembic_version SET version_num = "
-                    "'0003_runtime_health'"
+                    "'0004_telegram_identity'"
                 )
             )
         current_status, current_body = asyncio.run(asgi_get(application, "/healthz"))

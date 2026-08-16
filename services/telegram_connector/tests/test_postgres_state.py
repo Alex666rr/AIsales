@@ -178,6 +178,23 @@ def test_authoritative_account_organization_lookup_survives_restart(tmp_path):
         engine.dispose()
 
 
+def test_telegram_numeric_account_identity_is_unique_across_organizations(tmp_path):
+    """A repeated import must reuse its platform account, never create a cross-org duplicate."""
+    engine, sessions = durable_sessions(tmp_path)
+    try:
+        repository_class = repository_type("SqlAlchemyTelegramAccountRepository")
+        first = repository_class(sessions).provision(ORGANIZATION, 123456)
+        repeated = repository_class(sessions).provision(ORGANIZATION, 123456)
+        resumed = asyncio.run(repository_class(sessions).provision_async(ORGANIZATION, 123456))
+
+        assert repeated == first
+        assert resumed == first
+        with pytest.raises(persistence.TelegramStateRepositoryUnavailable):
+            repository_class(sessions).provision(ACCOUNT_TWO, 123456)
+    finally:
+        engine.dispose()
+
+
 def test_database_constraint_rejects_a_connection_with_the_wrong_session_key_version(tmp_path):
     """Repository validation alone cannot protect against a direct mismatched runtime insert."""
     engine, sessions = durable_sessions(tmp_path)

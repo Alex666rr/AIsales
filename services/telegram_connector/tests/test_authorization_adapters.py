@@ -6,6 +6,7 @@ import stat
 import tarfile
 import zipfile
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -61,10 +62,13 @@ class FakeUserClient:
             raise InvalidCode(f"bad password {password}")
         return (41, "alice")
 
-    async def request_qr(self) -> str:
-        return "qr-login-token"
+    async def export_session(self) -> bytes:
+        return b"TELETHON_STRING_SESSION\x00\x01one-time-session"
 
-    async def complete_qr(self, token: str) -> tuple[int, str]:
+    async def request_qr(self) -> object:
+        return SimpleNamespace(url="tg://login?token=QR-SENTINEL")
+
+    async def complete_qr(self, token: object) -> tuple[int, str]:
         if self.qr_result == "expired":
             raise QrExpired(f"expired {token}")
         return self.qr_result  # type: ignore[return-value]
@@ -139,6 +143,22 @@ def test_phone_code_flow_authorizes_without_returning_phone_code_or_client_secre
     assert "raw-server-code-hash" not in repr(result)
 
 
+def test_phone_authorization_allows_one_owner_bound_internal_session_claim():
+    """A completed phone challenge must yield its session once without making it public state."""
+    adapter = PhoneAdapter(lambda: FakeUserClient())
+    start = run(adapter.start("+15551234567", OWNER_A))
+    assert run(adapter.submit_code(start.challenge_id, OWNER_A, "12345")).state == "authorized"
+
+    identity, payload = run(adapter.consume_authorized_session(start.challenge_id, OWNER_A))
+
+    assert identity == 41
+    assert payload == b"TELETHON_STRING_SESSION\x00\x01one-time-session"
+    with pytest.raises(ValueError, match="^authorized session unavailable$"):
+        run(adapter.consume_authorized_session(start.challenge_id, OWNER_A))
+    with pytest.raises(ValueError, match="^authorized session unavailable$"):
+        run(adapter.consume_authorized_session(start.challenge_id, OWNER_B))
+
+
 def test_phone_invalid_code_is_a_safe_failed_state_without_exception_detail():
     """Returning raw client errors would expose the rejected code and phone number."""
     adapter = PhoneAdapter(lambda: FakeUserClient(code_result="invalid"))
@@ -206,6 +226,30 @@ def test_qr_expiry_requires_a_fresh_challenge_before_retrying():
     assert first.state == "code_sent"
     assert expired.state == "expired"
     assert replay.state == "failed"
+
+
+def test_qr_background_wait_starts_before_status_poll_and_claims_session_once():
+    """Polling after scan is too late: the wait must start with the QR challenge itself."""
+
+    async def scenario():
+        client = BlockingUserClient(block="qr")
+        adapter = QRAdapter(lambda: client)
+        start, qr_url = await adapter.start_background(OWNER_A)
+        await client.started.wait()
+        pending = await adapter.status(start.challenge_id, OWNER_A)
+        client.release.set()
+        await asyncio.sleep(0)
+        authorized = await adapter.status(start.challenge_id, OWNER_A)
+        identity, payload = await adapter.consume_authorized_session(start.challenge_id, OWNER_A)
+        return start, qr_url, pending, authorized, identity, payload
+
+    start, qr_url, pending, authorized, identity, payload = run(scenario())
+
+    assert qr_url == "tg://login?token=QR-SENTINEL"
+    assert "QR-SENTINEL" not in repr(start)
+    assert pending.state == "code_sent"
+    assert authorized.state == "authorized"
+    assert (identity, payload) == (42, b"TELETHON_STRING_SESSION\x00\x01one-time-session")
 
 
 def test_phone_continuations_reject_a_different_authenticated_owner():

@@ -22,6 +22,8 @@ class PhoneAuthorizationClient(Protocol):
 
     async def check_password(self, password: str) -> tuple[int, str | None]: ...
 
+    async def export_session(self) -> bytes: ...
+
 
 class AuthStep(BaseModel):
     """A deliberately non-secret view of one authorization challenge."""
@@ -41,6 +43,7 @@ class _Challenge:
     client: object | None
     phone: str | None = None
     qr_token: object | None = None
+    telegram_user_id: int | None = None
     state: str = "code_sent"
 
 
@@ -122,9 +125,45 @@ class _ChallengeStore:
                 self._remember_expired_locked(challenge_id, current.expires_at, current.owner_id)
                 return _step("expired", challenge_id, current.expires_at)
             current.state = state
-            if state in {"authorized", "failed", "expired"}:
+            if state == "authorized":
+                current.phone = None
+                current.qr_token = None
+            elif state in {"failed", "expired"}:
                 self._clear_secrets(current)
             return _step(state, challenge_id, current.expires_at)
+
+    async def qr_url(self, challenge_id: UUID, owner_id: object) -> str:
+        """Read a QR deep link only for its bound, still-live challenge owner."""
+        self._require_owner(owner_id)
+        async with self._lock:
+            self._prune_locked()
+            challenge = self._active.get(challenge_id)
+            if (
+                challenge is None
+                or challenge.owner_id != owner_id
+                or challenge.state != "code_sent"
+            ):
+                raise ValueError("QR challenge unavailable")
+            url = getattr(challenge.qr_token, "url", None)
+            if not isinstance(url, str) or not url:
+                raise ValueError("QR challenge unavailable")
+            return url
+
+    async def status(self, challenge_id: UUID, owner_id: object) -> AuthStep:
+        """Observe challenge state without claiming its live Telegram operation."""
+        self._require_owner(owner_id)
+        async with self._lock:
+            self._prune_locked()
+            challenge = self._active.get(challenge_id)
+            if challenge is None:
+                expired = self._expired.get(challenge_id)
+                if expired is not None and expired[1] == owner_id:
+                    return _step("expired", challenge_id, expired[0])
+                return _step("failed", challenge_id, self._utc_now())
+            if challenge.owner_id != owner_id:
+                return _step("failed", challenge_id, challenge.expires_at)
+            state = "code_sent" if challenge.state == "processing" else challenge.state
+            return _step(state, challenge_id, challenge.expires_at)
 
     def _prune_locked(self) -> None:
         now = self._utc_now()
@@ -222,7 +261,10 @@ class PhoneAdapter:
         if challenge is None:
             return terminal or await self._challenges.failed()
         try:
-            await cast(PhoneAuthorizationClient, challenge.client).sign_in(challenge.phone or "", code)
+            identity, _username = await cast(PhoneAuthorizationClient, challenge.client).sign_in(
+                challenge.phone or "", code
+            )
+            challenge.telegram_user_id = _require_telegram_user_id(identity)
         except Exception as error:
             return await self._challenges.finish(
                 challenge_id, challenge, "needs_2fa" if _is_2fa_required(error) else "failed"
@@ -234,13 +276,39 @@ class PhoneAdapter:
         if challenge is None:
             return terminal or await self._challenges.failed()
         try:
-            await cast(PhoneAuthorizationClient, challenge.client).check_password(password)
+            identity, _username = await cast(PhoneAuthorizationClient, challenge.client).check_password(password)
+            challenge.telegram_user_id = _require_telegram_user_id(identity)
         except Exception:
             return await self._challenges.finish(challenge_id, challenge, "failed")
         return await self._challenges.finish(challenge_id, challenge, "authorized")
+
+    async def consume_authorized_session(
+        self,
+        challenge_id: UUID,
+        owner_id: object,
+    ) -> tuple[int, bytes]:
+        """Claim the completed in-memory session once for immediate encryption."""
+        challenge, _terminal = await self._challenges.claim(challenge_id, owner_id, "authorized")
+        if challenge is None or challenge.telegram_user_id is None or challenge.client is None:
+            raise ValueError("authorized session unavailable")
+        try:
+            payload = await cast(PhoneAuthorizationClient, challenge.client).export_session()
+            if not isinstance(payload, bytes) or not payload:
+                raise ValueError
+            return challenge.telegram_user_id, payload
+        except Exception:
+            raise ValueError("authorized session unavailable") from None
+        finally:
+            await self._challenges.finish(challenge_id, challenge, "failed")
 
     async def probe(self, material: SessionMaterial) -> SessionProbeResult:
         return SessionProbeResult(adapter=self.name, state="needs_code", telegram_user_id=None, username=None, phone_masked=None, capabilities=frozenset(), error_code=None)
 
     async def convert(self, material: SessionMaterial) -> bytes:
         raise ValueError("interactive authorization cannot be imported")
+
+
+def _require_telegram_user_id(value: object) -> int:
+    if type(value) is not int or value <= 0:
+        raise ValueError("invalid Telegram user identity")
+    return value

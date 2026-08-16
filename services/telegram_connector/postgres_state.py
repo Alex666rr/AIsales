@@ -33,6 +33,7 @@ telegram_accounts = sa.Table(
     telegram_state_metadata,
     sa.Column("account_id", sa.Uuid(as_uuid=True), primary_key=True),
     sa.Column("organization_id", sa.Uuid(as_uuid=True), nullable=False, index=True),
+    sa.Column("telegram_user_id", sa.BigInteger(), unique=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.current_timestamp()),
 )
 
@@ -186,6 +187,40 @@ class SqlAlchemyTelegramAccountRepository:
                     )
         except Exception:
             raise TelegramStateRepositoryUnavailable() from None
+
+    def provision(self, organization_id: UUID, telegram_user_id: int) -> UUID:
+        """Return the sole platform account for one Telegram numeric identity."""
+        if telegram_user_id <= 0:
+            raise TelegramStateRepositoryUnavailable()
+        for _ in range(2):
+            try:
+                with self._sessions.begin() as session:
+                    row = session.execute(
+                        sa.select(telegram_accounts.c.account_id, telegram_accounts.c.organization_id)
+                        .where(telegram_accounts.c.telegram_user_id == telegram_user_id)
+                        .with_for_update()
+                    ).one_or_none()
+                    if row is not None:
+                        if row.organization_id != organization_id:
+                            raise TelegramStateRepositoryUnavailable()
+                        return row.account_id
+                    account_id = uuid4()
+                    session.execute(sa.insert(telegram_accounts).values(
+                        account_id=account_id,
+                        organization_id=organization_id,
+                        telegram_user_id=telegram_user_id,
+                    ))
+                    return account_id
+            except TelegramStateRepositoryUnavailable:
+                raise
+            except sa.exc.IntegrityError:
+                continue
+            except Exception:
+                raise TelegramStateRepositoryUnavailable() from None
+        raise TelegramStateRepositoryUnavailable()
+
+    async def provision_async(self, organization_id: UUID, telegram_user_id: int) -> UUID:
+        return await asyncio.to_thread(self.provision, organization_id, telegram_user_id)
 
     def organization_for(self, account_id: UUID) -> UUID | None:
         try:
