@@ -73,7 +73,7 @@ from .modules.telegram_connections.tdata_handoff import TdataHandoffService
 from .modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
-REQUIRED_SCHEMA_REVISIONS = frozenset({"0004_telegram_identity"})
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0005_stage1_foundation"})
 
 
 class TelegramPolicyContextIssuer:
