@@ -44,6 +44,7 @@ from telegram_connector.session_store import EncryptedSessionStore
 from .config import ApiSettings
 from .modules.auth.persistence import SqlAlchemyAuthRepository
 from .modules.auth.routes import build_auth_router
+from .modules.auth.session_auth import SessionAuthenticator
 from .modules.auth.service import AuthService
 from .modules.policy.models import (
     AiOperation,
@@ -196,6 +197,7 @@ class ApplicationComposition:
     protected_message_loader: PolicyProtectedMessageLoader
     auth_repository: SqlAlchemyAuthRepository
     auth_service: AuthService
+    session_authenticator: SessionAuthenticator
     auth_router: object
     policy_router: object
     connection_router: object
@@ -256,6 +258,7 @@ def build_application_composition(
         encryption_key=key,
         now=lambda: datetime.now(UTC),
     )
+    session_authenticator = SessionAuthenticator(auth_service)
     gateway_factory = ComposedGatewayFactory(gateway_repository, compatibility_repository)
 
     api_hash = settings.telegram_api_hash.get_secret_value()
@@ -342,6 +345,7 @@ def build_application_composition(
         protected_message_loader=protected_loader,
         auth_repository=auth_repository,
         auth_service=auth_service,
+        session_authenticator=session_authenticator,
         auth_router=auth_router,
         policy_router=policy_router,
         connection_router=connection_router,

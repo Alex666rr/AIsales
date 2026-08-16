@@ -15,6 +15,7 @@ from app.modules.auth.service import (
     SecondFactorRequired,
     SessionRevoked,
 )
+from app.modules.auth.session_auth import SessionAuthenticator
 from app.modules.auth.totp import encrypt_totp_secret, totp_at
 from app.modules.organizations.models import UserRole
 
@@ -104,3 +105,15 @@ def test_revoked_session_is_not_accepted_as_an_authenticated_principal():
 
     with pytest.raises(SessionRevoked):
         service.require_session(session.id)
+
+
+def test_cookie_session_is_issued_as_a_trusted_tenant_context():
+    repository = FakeAuthRepository([manager()])
+    service = AuthService(repository, encryption_key=KEY, now=lambda: NOW)
+    session = service.login(email="manager@example.test", password="correct password")
+
+    context = SessionAuthenticator(service).from_session_id(str(session.id))
+
+    assert context.organization_id == ORG_ID
+    assert context.actor_id == MANAGER_ID
+    assert context.roles == frozenset({"manager"})

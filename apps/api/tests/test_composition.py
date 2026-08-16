@@ -196,6 +196,7 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         assert type(composition.proxy_repository).__name__ == "SqlAlchemyProxyAssignmentRepository"
         assert type(composition.gateway_repository).__name__ == "SqlAlchemyMessageDeliveryRepository"
         assert type(composition.auth_repository).__name__ == "SqlAlchemyAuthRepository"
+        assert type(composition.session_authenticator).__name__ == "SessionAuthenticator"
 
         status, body = asyncio.run(
             asgi_post_json(
