@@ -9,7 +9,13 @@ from fastapi import HTTPException
 
 from app.main import create_app
 from app.modules.policy.models import PlatformOwnerPrincipal
-from app.modules.telegram_connections.models import AttemptStatus, AttemptView, ConnectionMethod, QrStartView
+from app.modules.telegram_connections.models import (
+    AttemptStatus,
+    AttemptView,
+    ConnectionMethod,
+    QrStartView,
+    TdataConnectionView,
+)
 from app.modules.telegram_connections.routes import build_connection_router, build_tdata_ticket_router
 from app.modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
@@ -80,6 +86,15 @@ class FakeAttempts:
         return AttemptView(attempt_id=attempt_id, method=ConnectionMethod.QR, status=AttemptStatus.PENDING, expires_at=datetime.now(UTC))
 
 
+class FakeTdataHandoffs:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, object, bytes, bytes, bytes]] = []
+
+    async def accept(self, owner, ticket_id, client_public_key, nonce, ciphertext) -> TdataConnectionView:
+        self.calls.append((owner, ticket_id, client_public_key, nonce, ciphertext))
+        return TdataConnectionView(account_id=uuid4(), telegram_user_id=123456, state="quarantine")
+
+
 def test_phone_start_route_returns_only_safe_attempt_view() -> None:
     async def principal() -> PlatformOwnerPrincipal:
         return PlatformOwnerPrincipal(principal_id=uuid4())
@@ -145,3 +160,44 @@ def test_tdata_ticket_route_returns_public_key_only_to_authenticated_owner() -> 
     response = json.loads(body)
     assert status == 201
     assert set(response) == {"ticket_id", "expires_at", "public_key"}
+
+
+def test_tdata_handoff_accepts_only_encoded_envelope_and_never_echoes_session_bytes() -> None:
+    async def principal() -> PlatformOwnerPrincipal:
+        return PlatformOwnerPrincipal(principal_id=uuid4())
+
+    handoffs = FakeTdataHandoffs()
+    application = create_app()
+    application.include_router(
+        build_tdata_ticket_router(
+            TdataTicketRegistry(), principal_dependency=principal, handoffs=handoffs
+        )
+    )
+    ticket_id = uuid4()
+    encrypted_session = b"TELETHON_STRING_SESSION\\x00\\x01must-never-return"
+
+    status, body = asyncio.run(
+        asgi_post(
+            application,
+            f"/telegram/connections/tdata/tickets/{ticket_id}/handoff",
+            {
+                "client_public_key": "Y2xpZW50LXB1YmxpYy1rZXk",
+                "nonce": "bm9uY2U",
+                "ciphertext": "VEVMRVRIT05fU1RSSU5HX1NFU1NJT04",
+            },
+        )
+    )
+
+    assert status == 201
+    response = json.loads(body)
+    assert set(response) == {"account_id", "telegram_user_id", "state"}
+    assert encrypted_session not in body
+    assert handoffs.calls == [
+        (
+            handoffs.calls[0][0],
+            ticket_id,
+            b"client-public-key",
+            b"nonce",
+            b"TELETHON_STRING_SESSION",
+        )
+    ]

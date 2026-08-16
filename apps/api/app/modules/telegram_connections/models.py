@@ -47,3 +47,13 @@ class QrStartView(AttemptView):
     """The one response that carries a short-lived QR deep link for scanning."""
 
     qr_url: str = Field(min_length=1, max_length=4096, repr=False)
+
+
+class TdataConnectionView(BaseModel):
+    """The safe result of accepting a locally converted tdata session."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    account_id: UUID
+    telegram_user_id: int = Field(gt=0)
+    state: str = Field(pattern=r"^(quarantine|active)$")

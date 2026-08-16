@@ -62,12 +62,14 @@ from .modules.policy.service import (
     PolicyGate,
     PolicyProtectedMessageLoader,
 )
-from .modules.telegram_connections.routes import build_connection_router
+from .modules.telegram_connections.routes import build_connection_router, build_tdata_ticket_router
 from .modules.telegram_connections.service import (
     ConnectionAttemptService,
     PhoneAttemptAdapter,
     QrAttemptAdapter,
 )
+from .modules.telegram_connections.tdata_handoff import TdataHandoffService
+from .modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
 REQUIRED_SCHEMA_REVISIONS = frozenset({"0004_telegram_identity"})
@@ -161,6 +163,16 @@ class ComposedGatewayFactory:
         )
 
 
+class AsyncAccountProvisioner:
+    """Keep the async API boundary from invoking SQLAlchemy synchronously."""
+
+    def __init__(self, repository: SqlAlchemyTelegramAccountRepository) -> None:
+        self._repository = repository
+
+    async def provision(self, organization_id: UUID, telegram_user_id: int) -> UUID:
+        return await self._repository.provision_async(organization_id, telegram_user_id)
+
+
 @dataclass(frozen=True)
 class ApplicationComposition:
     """All production services; every mutable connector boundary is PostgreSQL-backed."""
@@ -179,6 +191,7 @@ class ApplicationComposition:
     protected_message_loader: PolicyProtectedMessageLoader
     policy_router: object
     connection_router: object
+    tdata_router: object
     sync_engine: Engine | None = None
     async_engine: AsyncEngine | None = None
 
@@ -277,6 +290,18 @@ def build_application_composition(
         connection_attempts,
         principal_dependency=authenticator,
     )
+    tdata_tickets = TdataTicketRegistry()
+    tdata_handoffs = TdataHandoffService(
+        tickets=tdata_tickets,
+        accounts=AsyncAccountProvisioner(account_repository),
+        sessions=session_store,
+        connections=connection_repository,
+    )
+    tdata_router = build_tdata_ticket_router(
+        tdata_tickets,
+        principal_dependency=authenticator,
+        handoffs=tdata_handoffs,
+    )
     return ApplicationComposition(
         account_repository=account_repository,
         session_store=session_store,
@@ -294,6 +319,7 @@ def build_application_composition(
         protected_message_loader=protected_loader,
         policy_router=policy_router,
         connection_router=connection_router,
+        tdata_router=tdata_router,
         sync_engine=sync_engine,
         async_engine=async_engine,
     )

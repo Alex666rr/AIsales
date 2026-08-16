@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import Protocol, TypeVar
@@ -12,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.policy.models import PlatformOwnerPrincipal
 
-from .models import AttemptView, QrStartView
+from .models import AttemptView, QrStartView, TdataConnectionView
 from .tdata_ticket import TdataTicketRegistry
 
 
@@ -71,6 +72,27 @@ class TdataTicketView(BaseModel):
     public_key: str
 
 
+class TdataHandoffRequest(BaseModel):
+    """Base64url envelope produced locally after tdata was converted."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    client_public_key: str = Field(min_length=1, max_length=128, repr=False)
+    nonce: str = Field(min_length=1, max_length=64, repr=False)
+    ciphertext: str = Field(min_length=1, max_length=16_384, repr=False)
+
+
+class TdataHandoffRoutes(Protocol):
+    async def accept(
+        self,
+        owner: PlatformOwnerPrincipal,
+        ticket_id: UUID,
+        client_public_key: bytes,
+        nonce: bytes,
+        ciphertext: bytes,
+    ) -> TdataConnectionView: ...
+
+
 def build_connection_router(
     attempts: PhoneAttemptRoutes,
     *,
@@ -122,6 +144,7 @@ def build_tdata_ticket_router(
     tickets: TdataTicketRegistry,
     *,
     principal_dependency: PrincipalDependency,
+    handoffs: TdataHandoffRoutes | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/telegram/connections/tdata", tags=["telegram-connections"])
 
@@ -136,7 +159,38 @@ def build_tdata_ticket_router(
             public_key=ticket.public_key,
         )
 
+    @router.post("/tickets/{ticket_id}/handoff", response_model=TdataConnectionView, status_code=status.HTTP_201_CREATED)
+    async def accept_handoff(
+        ticket_id: UUID,
+        request: TdataHandoffRequest,
+        principal: PlatformOwnerPrincipal = Depends(principal_dependency),
+    ) -> TdataConnectionView:
+        if handoffs is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram connection unavailable")
+        try:
+            return await handoffs.accept(
+                principal,
+                ticket_id,
+                _decode_base64url(request.client_public_key),
+                _decode_base64url(request.nonce),
+                _decode_base64url(request.ciphertext),
+            )
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="tdata handoff rejected",
+            ) from None
+
     return router
+
+
+def _decode_base64url(value: str) -> bytes:
+    try:
+        return base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True)
+    except Exception:
+        raise ValueError("invalid tdata handoff envelope") from None
 
 
 _RouteView = TypeVar("_RouteView", bound=AttemptView)

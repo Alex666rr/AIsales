@@ -14,6 +14,8 @@ secrets/
 # Telegram authorization data — never commit
 TData/
 tdata/
+!services/telegram_connector/importers/tdata/
+!services/telegram_connector/importers/tdata/*.py
 sessions/
 *.session
 *.session-journal

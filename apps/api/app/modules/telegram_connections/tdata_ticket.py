@@ -13,6 +13,13 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from telegram_connector.importers.tdata.handoff import (
+    decode_handoff_payload,
+    encode_handoff_payload,
+)
+
+encode_tdata_handoff = encode_handoff_payload
+decode_tdata_handoff = decode_handoff_payload
 
 
 class TicketRejected(RuntimeError):
