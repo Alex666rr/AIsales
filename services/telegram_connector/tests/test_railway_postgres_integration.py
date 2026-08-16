@@ -108,7 +108,7 @@ def test_bootstrap_reconciles_roles_and_owner_migrates_for_restricted_runtime():
     ).replace("postgresql+psycopg://", "postgresql://", 1)
     with psycopg.connect(runtime_url) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
-            "0004_telegram_identity",
+            "0006_stage1_access",
         )
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             connection.execute("CREATE TABLE public.runtime_must_not_create (id integer)")
