@@ -53,7 +53,20 @@ class TdataHandoffService:
             owner.principal_id, ticket_id, client_public_key, nonce, ciphertext
         )
         telegram_user_id, session_payload = decode_tdata_handoff(payload)
-        account_id = await self._accounts.provision(owner.principal_id, telegram_user_id)
+        return await self.finalize(
+            organization_id=owner.principal_id,
+            telegram_user_id=telegram_user_id,
+            session_payload=session_payload,
+        )
+
+    async def finalize(
+        self,
+        *,
+        organization_id: UUID,
+        telegram_user_id: int,
+        session_payload: bytes,
+    ) -> TdataConnectionView:
+        account_id = await self._accounts.provision(organization_id, telegram_user_id)
         session_ref = self._sessions.put(account_id, session_payload)
         await self._connections.save(self._quarantine_record(account_id, session_ref))
         return TdataConnectionView(

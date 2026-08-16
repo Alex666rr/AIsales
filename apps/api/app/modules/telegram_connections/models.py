@@ -32,6 +32,7 @@ class AttemptView(BaseModel):
     method: ConnectionMethod
     status: AttemptStatus
     expires_at: datetime
+    account_id: UUID | None = None
 
     @property
     def is_terminal(self) -> bool:

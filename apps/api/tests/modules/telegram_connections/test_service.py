@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from app.modules.policy.models import PlatformOwnerPrincipal
-from app.modules.telegram_connections.models import AttemptStatus, ConnectionMethod
+from app.modules.telegram_connections.models import AttemptStatus, ConnectionMethod, TdataConnectionView
 from app.modules.telegram_connections.service import ConnectionAttemptService
 from telegram_connector.adapters.phone import AuthStep
 
@@ -43,6 +43,9 @@ class FakePhoneAdapter:
             safe_message="safe",
         )
 
+    async def consume_authorized_session(self, challenge_id: UUID, owner_id: UUID) -> tuple[int, bytes]:
+        return 123456, b"TELETHON_STRING_SESSION\x00\x01phone-session"
+
 
 class FakeQrAdapter:
     def __init__(self) -> None:
@@ -63,6 +66,21 @@ class FakeQrAdapter:
             challenge_id=challenge_id,
             expires_at=self.expires_at,
             safe_message="safe",
+        )
+
+    async def consume_authorized_session(self, challenge_id: UUID, owner_id: UUID) -> tuple[int, bytes]:
+        return 123456, b"TELETHON_STRING_SESSION\x00\x01qr-session"
+
+
+class FakeFinalizer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[UUID, int, bytes]] = []
+        self.account_id = uuid4()
+
+    async def finalize(self, *, organization_id: UUID, telegram_user_id: int, session_payload: bytes) -> TdataConnectionView:
+        self.calls.append((organization_id, telegram_user_id, session_payload))
+        return TdataConnectionView(
+            account_id=self.account_id, telegram_user_id=telegram_user_id, state="quarantine"
         )
 
 
@@ -100,3 +118,27 @@ def test_qr_attempt_returns_only_the_required_short_lived_payload() -> None:
     assert started.status is AttemptStatus.PENDING
     assert started.qr_url == "tg://login?token=QR-SENTINEL"
     assert "QR-SENTINEL" not in repr(started)
+
+
+def test_authorized_phone_and_qr_attempts_finalize_their_one_time_sessions() -> None:
+    async def scenario() -> None:
+        owner = PlatformOwnerPrincipal(principal_id=uuid4())
+        phone, qr, finalizer = FakePhoneAdapter(), FakeQrAdapter(), FakeFinalizer()
+        service = ConnectionAttemptService(phone=phone, qr=qr, finalizer=finalizer)
+
+        phone_started = await service.start_phone(owner, "+12025550123")
+        await service.submit_code(owner, phone_started.attempt_id, "needs-2fa")
+        phone_complete = await service.submit_password(owner, phone_started.attempt_id, "correct")
+        qr_started = await service.start_qr(owner)
+        qr_complete = await service.qr_status(owner, qr_started.attempt_id)
+
+        assert phone_complete.status is AttemptStatus.AUTHORIZED
+        assert qr_complete.status is AttemptStatus.AUTHORIZED
+        assert phone_complete.account_id == finalizer.account_id
+        assert qr_complete.account_id == finalizer.account_id
+        assert finalizer.calls == [
+            (owner.principal_id, 123456, b"TELETHON_STRING_SESSION\x00\x01phone-session"),
+            (owner.principal_id, 123456, b"TELETHON_STRING_SESSION\x00\x01qr-session"),
+        ]
+
+    asyncio.run(scenario())

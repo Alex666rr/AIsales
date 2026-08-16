@@ -282,20 +282,21 @@ def build_application_composition(
         administration,
         principal_dependency=authenticator,
     )
-    connection_attempts = ConnectionAttemptService(
-        phone=cast(PhoneAttemptAdapter, adapter_registry.get("phone")),
-        qr=cast(QrAttemptAdapter, adapter_registry.get("qr")),
-    )
-    connection_router = build_connection_router(
-        connection_attempts,
-        principal_dependency=authenticator,
-    )
     tdata_tickets = TdataTicketRegistry()
     tdata_handoffs = TdataHandoffService(
         tickets=tdata_tickets,
         accounts=AsyncAccountProvisioner(account_repository),
         sessions=session_store,
         connections=connection_repository,
+    )
+    connection_attempts = ConnectionAttemptService(
+        phone=cast(PhoneAttemptAdapter, adapter_registry.get("phone")),
+        qr=cast(QrAttemptAdapter, adapter_registry.get("qr")),
+        finalizer=tdata_handoffs,
+    )
+    connection_router = build_connection_router(
+        connection_attempts,
+        principal_dependency=authenticator,
     )
     tdata_router = build_tdata_ticket_router(
         tdata_tickets,
