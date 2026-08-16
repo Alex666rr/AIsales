@@ -64,6 +64,7 @@ from .modules.policy.service import (
 )
 from .modules.telegram_connections.routes import build_connection_router, build_tdata_ticket_router
 from .modules.telegram_connections.service import (
+    ConnectionStatusService,
     ConnectionAttemptService,
     PhoneAttemptAdapter,
     QrAttemptAdapter,
@@ -297,6 +298,10 @@ def build_application_composition(
     connection_router = build_connection_router(
         connection_attempts,
         principal_dependency=authenticator,
+        statuses=ConnectionStatusService(
+            accounts=account_repository,
+            connections=connection_repository,
+        ),
     )
     tdata_router = build_tdata_ticket_router(
         tdata_tickets,

@@ -6,8 +6,10 @@ from uuid import UUID, uuid4
 
 from app.modules.policy.models import PlatformOwnerPrincipal
 from app.modules.telegram_connections.models import AttemptStatus, ConnectionMethod, TdataConnectionView
-from app.modules.telegram_connections.service import ConnectionAttemptService
+from app.modules.telegram_connections.service import ConnectionAttemptService, ConnectionStatusService
 from telegram_connector.adapters.phone import AuthStep
+from telegram_connector.runtime.connection import ConnectionHealth, ConnectionRecord
+from telegram_connector.session_store import SessionRef
 
 
 class FakePhoneAdapter:
@@ -84,6 +86,28 @@ class FakeFinalizer:
         )
 
 
+class FakeAccounts:
+    def __init__(self, owner_id: UUID) -> None:
+        self.owner_id = owner_id
+
+    async def organization_for_async(self, account_id: UUID) -> UUID | None:
+        return self.owner_id if account_id.int == 1 else None
+
+
+class FakeConnections:
+    async def get(self, account_id: UUID) -> ConnectionRecord | None:
+        if account_id.int != 1:
+            return None
+        return ConnectionRecord(
+            account_id=account_id,
+            session_ref=SessionRef(account_id=account_id, session_id=uuid4(), key_version=1),
+            health=ConnectionHealth(
+                state="quarantine", last_seen_at=datetime.now(UTC), proxy_ip=None,
+                latency_ms=None, error_code=None,
+            ),
+        )
+
+
 def test_phone_attempt_maps_code_and_2fa_without_exposing_phone_or_code() -> None:
     phone = FakePhoneAdapter()
     service = ConnectionAttemptService(phone=phone, qr=FakeQrAdapter())
@@ -140,5 +164,25 @@ def test_authorized_phone_and_qr_attempts_finalize_their_one_time_sessions() -> 
             (owner.principal_id, 123456, b"TELETHON_STRING_SESSION\x00\x01phone-session"),
             (owner.principal_id, 123456, b"TELETHON_STRING_SESSION\x00\x01qr-session"),
         ]
+
+    asyncio.run(scenario())
+
+
+def test_connection_status_is_visible_only_to_the_owner_that_provisioned_the_account() -> None:
+    async def scenario() -> None:
+        owner_id = uuid4()
+        service = ConnectionStatusService(accounts=FakeAccounts(owner_id), connections=FakeConnections())
+        account_id = UUID(int=1)
+
+        result = await service.get(PlatformOwnerPrincipal(principal_id=owner_id), account_id)
+
+        assert result.account_id == account_id
+        assert result.state == "quarantine"
+        try:
+            await service.get(PlatformOwnerPrincipal(principal_id=uuid4()), account_id)
+        except KeyError:
+            pass
+        else:
+            raise AssertionError("another owner read an account status")
 
     asyncio.run(scenario())

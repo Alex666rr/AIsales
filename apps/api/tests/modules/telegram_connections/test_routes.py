@@ -15,6 +15,7 @@ from app.modules.telegram_connections.models import (
     ConnectionMethod,
     QrStartView,
     TdataConnectionView,
+    ConnectionStatusView,
 )
 from app.modules.telegram_connections.routes import build_connection_router, build_tdata_ticket_router
 from app.modules.telegram_connections.tdata_ticket import TdataTicketRegistry
@@ -47,6 +48,43 @@ async def asgi_post(application, path: str, payload: dict[str, object]) -> tuple
             "query_string": b"",
             "root_path": "",
             "headers": [(b"content-type", b"application/json")],
+            "client": ("127.0.0.1", 1),
+            "server": ("testserver", 80),
+        },
+        receive,
+        send,
+    )
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    response = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+    return start["status"], response
+
+
+async def asgi_get(application, path: str) -> tuple[int, bytes]:
+    sent = False
+    messages: list[dict[str, object]] = []
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    await application(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "root_path": "",
+            "headers": [],
             "client": ("127.0.0.1", 1),
             "server": ("testserver", 80),
         },
@@ -93,6 +131,13 @@ class FakeTdataHandoffs:
     async def accept(self, owner, ticket_id, client_public_key, nonce, ciphertext) -> TdataConnectionView:
         self.calls.append((owner, ticket_id, client_public_key, nonce, ciphertext))
         return TdataConnectionView(account_id=uuid4(), telegram_user_id=123456, state="quarantine")
+
+
+class FakeStatuses:
+    async def get(self, owner, account_id) -> ConnectionStatusView:
+        return ConnectionStatusView(
+            account_id=account_id, state="quarantine", last_seen_at=None, error_code=None
+        )
 
 
 def test_phone_start_route_returns_only_safe_attempt_view() -> None:
@@ -201,3 +246,24 @@ def test_tdata_handoff_accepts_only_encoded_envelope_and_never_echoes_session_by
             b"TELETHON_STRING_SESSION",
         )
     ]
+
+
+def test_connection_status_route_exposes_only_safe_operational_state() -> None:
+    async def principal() -> PlatformOwnerPrincipal:
+        return PlatformOwnerPrincipal(principal_id=uuid4())
+
+    account_id = uuid4()
+    application = create_app()
+    application.include_router(
+        build_connection_router(FakeAttempts(), principal_dependency=principal, statuses=FakeStatuses())
+    )
+
+    status, body = asyncio.run(asgi_get(application, f"/telegram/connections/{account_id}"))
+
+    assert status == 200
+    assert json.loads(body) == {
+        "account_id": str(account_id),
+        "state": "quarantine",
+        "last_seen_at": None,
+        "error_code": None,
+    }

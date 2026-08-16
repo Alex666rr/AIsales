@@ -58,3 +58,14 @@ class TdataConnectionView(BaseModel):
     account_id: UUID
     telegram_user_id: int = Field(gt=0)
     state: str = Field(pattern=r"^(quarantine|active)$")
+
+
+class ConnectionStatusView(BaseModel):
+    """Safe operational state; it intentionally contains no session or proxy secret."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    account_id: UUID
+    state: str
+    last_seen_at: datetime | None
+    error_code: str | None

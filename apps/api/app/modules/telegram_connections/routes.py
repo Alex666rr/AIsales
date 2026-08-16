@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.policy.models import PlatformOwnerPrincipal
 
-from .models import AttemptView, QrStartView, TdataConnectionView
+from .models import AttemptView, ConnectionStatusView, QrStartView, TdataConnectionView
 from .tdata_ticket import TdataTicketRegistry
 
 
@@ -93,10 +93,17 @@ class TdataHandoffRoutes(Protocol):
     ) -> TdataConnectionView: ...
 
 
+class ConnectionStatusRoutes(Protocol):
+    async def get(
+        self, owner: PlatformOwnerPrincipal, account_id: UUID
+    ) -> ConnectionStatusView: ...
+
+
 def build_connection_router(
     attempts: PhoneAttemptRoutes,
     *,
     principal_dependency: PrincipalDependency,
+    statuses: ConnectionStatusRoutes | None = None,
 ) -> APIRouter:
     """Build routes that receive identity exclusively from server auth."""
     router = APIRouter(prefix="/telegram/connections", tags=["telegram-connections"])
@@ -136,6 +143,20 @@ def build_connection_router(
         principal: PlatformOwnerPrincipal = Depends(principal_dependency),
     ) -> AttemptView:
         return await _safe_call(attempts.qr_status(principal, attempt_id))
+
+    @router.get("/{account_id}", response_model=ConnectionStatusView)
+    async def connection_status(
+        account_id: UUID,
+        principal: PlatformOwnerPrincipal = Depends(principal_dependency),
+    ) -> ConnectionStatusView:
+        if statuses is None:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram connection unavailable")
+        try:
+            return await statuses.get(principal, account_id)
+        except KeyError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="telegram connection not found") from None
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram connection unavailable") from None
 
     return router
 

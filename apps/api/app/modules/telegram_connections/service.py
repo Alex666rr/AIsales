@@ -9,7 +9,7 @@ from telegram_connector.adapters.phone import AuthStep
 
 from app.modules.policy.models import PlatformOwnerPrincipal
 
-from .models import AttemptStatus, AttemptView, ConnectionMethod, QrStartView
+from .models import AttemptStatus, AttemptView, ConnectionMethod, ConnectionStatusView, QrStartView
 
 
 class PhoneAttemptAdapter(Protocol):
@@ -32,6 +32,14 @@ class AuthorizedSessionFinalizer(Protocol):
     async def finalize(
         self, *, organization_id: UUID, telegram_user_id: int, session_payload: bytes
     ): ...
+
+
+class AccountOwnershipLookup(Protocol):
+    async def organization_for_async(self, account_id: UUID) -> UUID | None: ...
+
+
+class ConnectionLookup(Protocol):
+    async def get(self, account_id: UUID): ...
 
 
 _PHONE_STATES = {
@@ -102,6 +110,30 @@ class ConnectionAttemptService:
             )
         except Exception:
             return _view(step.model_copy(update={"state": "failed"}), method, _PHONE_STATES if method is ConnectionMethod.PHONE else _QR_STATES)
+
+
+class ConnectionStatusService:
+    """Return a connection state only after authoritative owner lookup."""
+
+    def __init__(self, *, accounts: AccountOwnershipLookup, connections: ConnectionLookup) -> None:
+        self._accounts = accounts
+        self._connections = connections
+
+    async def get(
+        self, owner: PlatformOwnerPrincipal, account_id: UUID
+    ) -> ConnectionStatusView:
+        organization_id = await self._accounts.organization_for_async(account_id)
+        if organization_id != owner.principal_id:
+            raise KeyError("connection was not found")
+        record = await self._connections.get(account_id)
+        if record is None:
+            raise KeyError("connection was not found")
+        return ConnectionStatusView(
+            account_id=account_id,
+            state=record.health.state,
+            last_seen_at=record.health.last_seen_at,
+            error_code=record.health.error_code,
+        )
 
 
 def _view(step: AuthStep, method: ConnectionMethod, states: dict[str, AttemptStatus]) -> AttemptView:
