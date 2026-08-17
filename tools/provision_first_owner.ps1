@@ -16,7 +16,7 @@ function Resolve-HttpsBaseUrl {
         $uri = [uri]$Candidate
     }
     catch {
-        throw "Адрес AIsales должен быть корректным HTTPS-адресом."
+        throw "AIsales URL must be a valid HTTPS URL."
     }
 
     if (-not $uri.IsAbsoluteUri -or $uri.Scheme -ne "https" -or
@@ -24,7 +24,7 @@ function Resolve-HttpsBaseUrl {
         -not [string]::IsNullOrEmpty($uri.Query) -or
         -not [string]::IsNullOrEmpty($uri.Fragment) -or
         ($uri.AbsolutePath -ne "/")) {
-        throw "Адрес AIsales должен быть HTTPS-адресом без пути, параметров и фрагмента."
+        throw "AIsales URL must use HTTPS and contain no path, query, or fragment."
     }
 
     return $uri.GetLeftPart([System.UriPartial]::Authority)
@@ -40,28 +40,28 @@ function Read-RequiredValue {
         $Value = Read-Host $Prompt
     }
     if ([string]::IsNullOrWhiteSpace($Value)) {
-        throw "$Prompt не может быть пустым."
+        throw "$Prompt cannot be empty."
     }
     return $Value.Trim()
 }
 
 try {
     $resolvedBaseUrl = Resolve-HttpsBaseUrl -Candidate $BaseUrl
-    $organizationName = Read-RequiredValue -Prompt "Название организации" -Value $OrganizationName
-    $ownerEmail = Read-RequiredValue -Prompt "Рабочий email первого владельца" -Value $OwnerEmail
+    $organizationName = Read-RequiredValue -Prompt "Organization name" -Value $OrganizationName
+    $ownerEmail = Read-RequiredValue -Prompt "First owner work email" -Value $OwnerEmail
 
     if ($ownerEmail -notmatch "^[^@\s]+@[^@\s]+\.[^@\s]+$") {
-        throw "Укажите корректный рабочий email."
+        throw "Enter a valid work email address."
     }
 
-    $secureToken = Read-Host "Токен владельца платформы (не отображается)" -AsSecureString
+    $secureToken = Read-Host "Platform owner token (hidden)" -AsSecureString
     $tokenPointer = [IntPtr]::Zero
 
     try {
         $tokenPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
         $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenPointer)
         if ([string]::IsNullOrWhiteSpace($token)) {
-            throw "Токен не может быть пустым."
+            throw "Platform owner token cannot be empty."
         }
 
         $payload = @{
@@ -78,14 +78,14 @@ try {
 
         $setupToken = [string]$response.setup_token
         if ([string]::IsNullOrWhiteSpace($setupToken)) {
-            throw "Сервер не вернул одноразовую ссылку настройки."
+            throw "The server did not return a one-time setup link."
         }
 
         $setupUrl = "$resolvedBaseUrl/setup?token=$([uri]::EscapeDataString($setupToken))"
-        Write-Output "Первый владелец создан для $([string]$response.owner_email)."
-        Write-Output "Откройте эту одноразовую ссылку в этом браузере:"
+        Write-Output "First owner created for $([string]$response.owner_email)."
+        Write-Output "Open this one-time link in the current browser:"
         Write-Output $setupUrl
-        Write-Output "Ссылка действует 48 часов. Не пересылайте её в чат и не сохраняйте в скриншотах."
+        Write-Output "The link expires in 48 hours. Do not share it in chat or screenshots."
     }
     finally {
         if ($tokenPointer -ne [IntPtr]::Zero) {
@@ -95,6 +95,6 @@ try {
     }
 }
 catch {
-    Write-Error "Не удалось создать первого владельца. Проверьте HTTPS-адрес AIsales, данные и токен в Railway."
+    Write-Error "Could not create the first owner. Check the AIsales HTTPS URL, details, and Railway token."
     exit 1
 }
