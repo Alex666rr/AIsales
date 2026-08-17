@@ -33,3 +33,5 @@ class ServerSession:
     mfa_verified: bool
     issued_at: datetime
     revoked_at: datetime | None = None
+    last_active_at: datetime | None = None
+    expires_at: datetime | None = None

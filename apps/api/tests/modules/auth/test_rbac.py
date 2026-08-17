@@ -117,3 +117,12 @@ def test_cookie_session_is_issued_as_a_trusted_tenant_context():
     assert context.organization_id == ORG_ID
     assert context.actor_id == MANAGER_ID
     assert context.roles == frozenset({"manager"})
+
+
+def test_server_session_has_expiry_and_activity_timestamps():
+    service = AuthService(FakeAuthRepository([manager()]), encryption_key=KEY, now=lambda: NOW)
+
+    session = service.login(email="manager@example.test", password="correct password")
+
+    assert session.last_active_at == NOW
+    assert session.expires_at > NOW

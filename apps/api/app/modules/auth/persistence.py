@@ -44,6 +44,8 @@ auth_sessions = sa.Table(
     sa.Column("roles", sa.JSON(), nullable=False),
     sa.Column("mfa_verified", sa.Boolean(), nullable=False),
     sa.Column("issued_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_active_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
 )
 
@@ -96,6 +98,8 @@ class SqlAlchemyAuthRepository:
             "roles": sorted(session.roles),
             "mfa_verified": session.mfa_verified,
             "issued_at": session.issued_at,
+            "last_active_at": session.last_active_at or session.issued_at,
+            "expires_at": session.expires_at or session.issued_at,
             "revoked_at": session.revoked_at,
         }
         with self._engine.begin() as connection:
@@ -135,6 +139,8 @@ def _to_session(row) -> ServerSession:
         roles=frozenset(row["roles"]),
         mfa_verified=row["mfa_verified"],
         issued_at=_as_utc(row["issued_at"]),
+        last_active_at=_as_utc(row["last_active_at"]),
+        expires_at=_as_utc(row["expires_at"]),
         revoked_at=_as_utc(row["revoked_at"]) if row["revoked_at"] is not None else None,
     )
 

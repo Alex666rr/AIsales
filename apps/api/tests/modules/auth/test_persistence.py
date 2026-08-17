@@ -47,6 +47,8 @@ def test_auth_repository_persists_one_way_credentials_and_revocation(tmp_path):
             roles=frozenset({"company_owner"}),
             mfa_verified=True,
             issued_at=NOW,
+            last_active_at=NOW,
+            expires_at=NOW,
             revoked_at=NOW,
         )
         repository.save_session(session)

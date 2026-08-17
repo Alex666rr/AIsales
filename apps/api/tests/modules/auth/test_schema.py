@@ -36,4 +36,4 @@ def test_access_migration_creates_tenant_scoped_users_and_revocable_sessions():
 
 
 def test_api_readiness_requires_the_access_schema_revision():
-    assert composition.REQUIRED_SCHEMA_REVISIONS == frozenset({"0006_stage1_access"})
+    assert composition.REQUIRED_SCHEMA_REVISIONS == frozenset({"0007_auth_session_lifecycle"})

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Protocol
 from uuid import UUID, uuid4
 
@@ -45,6 +45,7 @@ class AuthService:
         UserRole.COMPANY_OWNER,
         UserRole.ADMINISTRATOR,
     }
+    _SESSION_TTL = timedelta(hours=12)
 
     def __init__(
         self,
@@ -74,13 +75,16 @@ class AuthService:
             user = self._verify_second_factor(user, totp_code, recovery_code)
             mfa_verified = True
 
+        issued_at = self._now()
         session = ServerSession(
             id=uuid4(),
             user_id=user.id,
             organization_id=user.organization_id,
             roles=frozenset({user.role.value}),
             mfa_verified=mfa_verified,
-            issued_at=self._now(),
+            issued_at=issued_at,
+            last_active_at=issued_at,
+            expires_at=issued_at + self._SESSION_TTL,
         )
         self._repository.save_session(session)
         return session
