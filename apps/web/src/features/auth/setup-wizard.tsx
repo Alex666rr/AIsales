@@ -5,6 +5,18 @@ import { activateSetup, ApiError, confirmTotp } from "../../shared/api/client";
 
 type Enrollment = { enrollmentToken: string; totpUri: string };
 
+function SetupProgress({ current }: { current: "password" | "totp" | "recovery" }) {
+  const steps = [
+    ["password", "Создать пароль"],
+    ["totp", "Подключить TOTP"],
+    ["recovery", "Сохранить коды"],
+  ] as const;
+
+  return <ol className="setup-progress" aria-label="Прогресс настройки">
+    {steps.map(([key, label]) => <li key={key} aria-current={current === key ? "step" : undefined}>{label}</li>)}
+  </ol>;
+}
+
 export function SetupWizard({ setupToken }: { setupToken: string }) {
   const [password, setPassword] = useState("");
   const [confirmation, setConfirmation] = useState("");
@@ -55,7 +67,7 @@ export function SetupWizard({ setupToken }: { setupToken: string }) {
   if (!setupToken) return <main className="centered">Ссылка для настройки недействительна.</main>;
   if (recoveryCodes) {
     return <main className="login-layout"><section className="login-card">
-      <p className="eyebrow">AIsales</p><h1>Сохраните recovery-коды</h1>
+      <p className="eyebrow">AIsales</p><SetupProgress current="recovery" /><h1>Сохраните recovery-коды</h1>
       <p className="muted">Каждый код работает один раз. Сохраните их в защищённом месте — после ухода со страницы они больше не покажутся.</p>
       <ul className="recovery-codes">{recoveryCodes.map((value) => <li key={value}>{value}</li>)}</ul>
       <a href="/">Перейти ко входу</a>
@@ -63,7 +75,7 @@ export function SetupWizard({ setupToken }: { setupToken: string }) {
   }
   if (enrollment) {
     return <main className="login-layout"><section className="login-card">
-      <p className="eyebrow">AIsales</p><h1>Подключите приложение-аутентификатор</h1>
+      <p className="eyebrow">AIsales</p><SetupProgress current="totp" /><h1>Подключите приложение-аутентификатор</h1>
       <p className="muted">Отсканируйте код в приложении-аутентификаторе, затем введите шестизначный код. URI оставлен как резервный ручной вариант.</p>
       <QRCodeSVG data-testid="totp-qr" value={enrollment.totpUri} size={208} level="M" includeMargin />
       <input aria-label="TOTP URI" readOnly value={enrollment.totpUri} />
@@ -73,7 +85,7 @@ export function SetupWizard({ setupToken }: { setupToken: string }) {
     </section></main>;
   }
   return <main className="login-layout"><section className="login-card">
-    <p className="eyebrow">AIsales</p><h1>Настройте доступ</h1><p className="muted">Создайте пароль. На следующем шаге понадобится приложение-аутентификатор.</p>
+    <p className="eyebrow">AIsales</p><SetupProgress current="password" /><h1>Настройте доступ</h1><p className="muted">Создайте пароль. На следующем шаге понадобится приложение-аутентификатор.</p>
     <form onSubmit={submitPassword}>
       <label>Новый пароль<input autoComplete="new-password" type="password" minLength={12} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
       <label>Повторите пароль<input autoComplete="new-password" type="password" minLength={12} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required /></label>

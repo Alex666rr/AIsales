@@ -34,27 +34,43 @@ export function App() {
   if (state.kind === "anonymous") return <LoginForm onAuthenticated={refreshSession} />;
 
   return (
-    <main className="application-shell">
+    <main className="application-shell" data-testid="application-shell" data-theme="control-room">
       <aside>
-        <p className="eyebrow">AIsales</p>
+        <p className="brand-mark">AIsales</p>
         <nav aria-label="Основная навигация">
           <a aria-current="page" href="#overview">Обзор</a>
-          <a href="#organization">Организация</a>
-          <a href="#users">Пользователи</a>
+          <a href="#accounts">Аккаунты</a>
+          <a href="#team">Команда</a>
         </nav>
       </aside>
       <section className="workspace" id="overview">
-        <p className="eyebrow">Stage 1 · S1.03</p>
         <h1>Администрирование</h1>
-        <p className="muted">Управляйте доступом к своей организации через серверную сессию.</p>
-        <article className="context-card">
-          <h2>Текущий доступ</h2>
-          <dl>
-            <dt>Роль</dt><dd>{state.session.roles.join(", ")}</dd>
-            <dt>Организация</dt><dd>{state.session.organization_id}</dd>
-          </dl>
-        </article>
-        {state.session.roles.includes("company_owner") && <StaffInvitationForm />}
+        <p className="muted">Управляйте аккаунтами и доступом команды через защищённую серверную сессию.</p>
+        <div className="workspace-grid">
+          <section className="context-card" id="accounts" aria-labelledby="accounts-heading">
+            <div className="section-heading">
+              <div>
+                <h2 id="accounts-heading">Telegram-аккаунты</h2>
+                <p className="muted">Подключённые рабочие аккаунты и их состояние будут отображаться здесь.</p>
+              </div>
+              <span className="status-chip">Нет подключений</span>
+            </div>
+            <p className="empty-state">Подключение аккаунтов станет доступно в следующем функциональном блоке. Сейчас платформа не создаёт и не имитирует подключения.</p>
+          </section>
+          <section className="context-card" id="team" aria-labelledby="team-heading">
+            <div className="section-heading">
+              <div>
+                <h2 id="team-heading">Доступ команды</h2>
+                <p className="muted">Текущая роль и приглашения сотрудников организации.</p>
+              </div>
+            </div>
+            <dl>
+              <dt>Роль</dt><dd>{state.session.roles.join(", ")}</dd>
+              <dt>Организация</dt><dd>{state.session.organization_id}</dd>
+            </dl>
+            {state.session.roles.includes("company_owner") && <StaffInvitationForm />}
+          </section>
+        </div>
       </section>
     </main>
   );

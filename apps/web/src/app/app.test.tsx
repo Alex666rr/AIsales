@@ -31,6 +31,9 @@ describe("App", () => {
 
     expect(await screen.findByRole("heading", { name: "Администрирование" })).toBeInTheDocument();
     expect(screen.getByText("company_owner")).toBeInTheDocument();
+    expect(screen.getByTestId("application-shell")).toHaveAttribute("data-theme", "control-room");
+    expect(screen.getByRole("heading", { name: "Telegram-аккаунты" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Доступ команды" })).toBeInTheDocument();
   });
 
   it("shows the login form when there is no active server session", async () => {
@@ -39,6 +42,27 @@ describe("App", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Вход в AIsales" })).toBeInTheDocument();
+  });
+
+  it("does not expose staff invitations to a non-owner", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            actor_id: "70000000-0000-0000-0000-000000000002",
+            organization_id: "60000000-0000-0000-0000-000000000001",
+            roles: ["manager"],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Telegram-аккаунты" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Создать приглашение" })).not.toBeInTheDocument();
   });
 
   it("lets a company owner issue a one-time staff setup link", async () => {
