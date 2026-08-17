@@ -30,7 +30,7 @@ export function StaffInvitationForm() {
     : null;
 
   return (
-    <article className="context-card" id="users">
+    <section className="staff-invitation" id="users">
       <h2>Пригласить сотрудника</h2>
       <p className="muted">Создайте одноразовую ссылку и передайте её сотруднику через защищённый канал.</p>
       <form onSubmit={submit}>
@@ -55,6 +55,6 @@ export function StaffInvitationForm() {
           <input aria-label="Одноразовая ссылка для сотрудника" readOnly value={setupLink} />
         </section>
       )}
-    </article>
+    </section>
   );
 }
