@@ -86,6 +86,16 @@ def test_api_image_expands_railway_port_through_an_explicit_shell():
     assert '--port "${PORT:-8000}"' in command[2]
 
 
+def test_api_image_builds_and_copies_the_administration_web_shell():
+    """Railway must publish the built browser interface from the same trusted image."""
+    dockerfile = (PROJECT_ROOT / "infra" / "Dockerfile").read_text(encoding="utf-8")
+
+    assert "FROM node:" in dockerfile
+    assert "AS web-build" in dockerfile
+    assert "COPY apps/web/package.json apps/web/pnpm-lock.yaml apps/web/pnpm-workspace.yaml ./" in dockerfile
+    assert "COPY --from=web-build /workspace/apps/web/dist ./apps/web/dist" in dockerfile
+
+
 def test_guide_wraps_migrations_start_command_and_documents_port():
     """Railway's exec-form start command must delegate shell syntax to `sh -c`."""
     guide = (PROJECT_ROOT / "docs" / "deployment" / "railway-stage-0.md").read_text(

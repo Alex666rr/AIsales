@@ -307,7 +307,10 @@ def build_application_composition(
         administration,
         principal_dependency=authenticator,
     )
-    auth_router = build_auth_router(auth_service)
+    auth_router = build_auth_router(
+        auth_service,
+        session_authenticator=session_authenticator,
+    )
     provisioning_service = ProvisioningService(
         auth_repository,
         encryption_key=key,

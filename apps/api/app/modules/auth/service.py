@@ -108,7 +108,12 @@ class AuthService:
 
     def require_session(self, session_id: UUID) -> ServerSession:
         session = self._repository.get_session(session_id)
-        if session is None or session.revoked_at is not None:
+        if (
+            session is None
+            or session.revoked_at is not None
+            or session.expires_at is None
+            or session.expires_at <= self._now()
+        ):
             raise SessionRevoked("session was not accepted")
         return session
 
