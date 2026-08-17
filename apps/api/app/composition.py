@@ -83,7 +83,7 @@ from .modules.telegram_connections.tdata_handoff import TdataHandoffService
 from .modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
-REQUIRED_SCHEMA_REVISIONS = frozenset({"0011_auth_runtime_access"})
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0012_staff_lifecycle"})
 
 
 class TelegramPolicyContextIssuer:

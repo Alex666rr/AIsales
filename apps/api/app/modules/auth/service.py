@@ -79,7 +79,12 @@ class AuthService:
         recovery_code: str | None = None,
     ) -> ServerSession:
         user = self._repository.get_user_by_email(email)
-        if user is None or user.password_hash is None or not verify_password(password, user.password_hash):
+        if (
+            user is None
+            or user.disabled_at is not None
+            or user.password_hash is None
+            or not verify_password(password, user.password_hash)
+        ):
             raise AuthenticationDenied("authentication was not accepted")
 
         mfa_verified = False

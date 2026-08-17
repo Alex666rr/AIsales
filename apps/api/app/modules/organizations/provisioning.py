@@ -78,6 +78,12 @@ class StaffInvitationRepository(Protocol):
         invitation: SetupInvitation,
     ) -> None: ...
 
+    def list_users_by_organization(self, organization_id: UUID) -> tuple[AuthUser, ...]: ...
+
+    def get_user_by_id(self, user_id: UUID) -> AuthUser | None: ...
+
+    def deactivate_user_and_revoke_sessions(self, user_id: UUID, *, now: datetime) -> AuthUser | None: ...
+
     def consume_setup_invitation_and_create_totp_enrollment(
         self,
         *,
@@ -231,6 +237,43 @@ class StaffInvitationService:
             role=user.role,
             setup_token=setup_token,
         )
+
+
+class StaffManagementService:
+    """List and deactivate staff within one owner-controlled organization."""
+
+    def __init__(self, repository: StaffInvitationRepository, *, now: Callable[[], datetime]) -> None:
+        self._repository = repository
+        self._now = now
+
+    def list_members(self, context: TenantContext) -> tuple[AuthUser, ...]:
+        self._require_owner(context)
+        return tuple(
+            user
+            for user in self._repository.list_users_by_organization(context.organization_id)
+            if user.role is not UserRole.COMPANY_OWNER
+        )
+
+    def deactivate_member(self, context: TenantContext, user_id: UUID) -> AuthUser:
+        self._require_owner(context)
+        user = self._repository.get_user_by_id(user_id)
+        if (
+            user is None
+            or user.organization_id != context.organization_id
+            or user.id == context.actor_id
+            or user.role is UserRole.COMPANY_OWNER
+            or user.disabled_at is not None
+        ):
+            raise OrganizationPermissionDenied("staff member cannot be deactivated")
+        updated = self._repository.deactivate_user_and_revoke_sessions(user_id, now=self._now())
+        if updated is None:
+            raise OrganizationPermissionDenied("staff member cannot be deactivated")
+        return updated
+
+    @staticmethod
+    def _require_owner(context: TenantContext) -> None:
+        if UserRole.COMPANY_OWNER.value not in context.roles:
+            raise OrganizationPermissionDenied("company owner role is required")
 
 
 def _invitation_id_from_token(setup_token: str) -> UUID | None:
