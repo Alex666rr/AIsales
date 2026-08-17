@@ -77,4 +77,4 @@
 
 - [x] Update operator instructions for scanning the TOTP URI and storing recovery codes offline.
 - [x] Run auth/organization/composition tests, compileall, Alembic SQL render, full pytest and `git diff --check`.
-- [ ] Commit only TOTP-enrollment files, push `codex/stage1-foundation`, and confirm the GitHub Actions run is green.
+- [x] Commit only TOTP-enrollment files, push `codex/stage1-foundation`, and confirm the GitHub Actions run is green.
