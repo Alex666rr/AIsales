@@ -40,7 +40,7 @@ export function StaffInvitationForm() {
         </label>
         <label>
           Роль
-          <select value={role} onChange={(event) => setRole(event.target.value as "administrator" | "manager")}> 
+          <select value={role} onChange={(event) => setRole(event.target.value as "administrator" | "manager")}>
             <option value="manager">Менеджер</option>
             <option value="administrator">Администратор</option>
           </select>
