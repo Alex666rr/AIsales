@@ -34,6 +34,11 @@ class RoadmapCard:
     plan_path: str
     next_action: str | None = None
 
+    @property
+    def is_complete(self) -> bool:
+        """Return the Trello completion state derived from the roadmap status."""
+        return self.status == "Готово"
+
 
 @dataclass(frozen=True)
 class SyncResult:
@@ -177,12 +182,27 @@ class TrelloBoardSynchronizer:
             name = f"{card.code} · {card.title}"
             found = existing.get(card.code)
             if found is None:
-                self._transport.request("POST", "/1/cards", data={"idList": str(lists[card.list_name]["id"]), "name": name, "desc": _description(card)})
+                self._transport.request(
+                    "POST",
+                    "/1/cards",
+                    data={
+                        "idList": str(lists[card.list_name]["id"]),
+                        "name": name,
+                        "desc": _description(card),
+                        "dueComplete": str(card.is_complete).lower(),
+                    },
+                )
                 created += 1
                 continue
             updated_description = _with_preserved_notes(str(found.get("desc", "")), card)
-            if updated_description != found.get("desc", ""):
-                self._transport.request("PUT", f"/1/cards/{found['id']}", data={"desc": updated_description})
+            is_complete = bool(found.get("dueComplete", False))
+            if updated_description != found.get("desc", "") or is_complete != card.is_complete:
+                changes: dict[str, str] = {}
+                if updated_description != found.get("desc", ""):
+                    changes["desc"] = updated_description
+                if is_complete != card.is_complete:
+                    changes["dueComplete"] = str(card.is_complete).lower()
+                self._transport.request("PUT", f"/1/cards/{found['id']}", data=changes)
                 updated += 1
         return created, updated
 

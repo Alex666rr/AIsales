@@ -14,6 +14,7 @@ class FakeCard:
     name: str
     description: str
     id_list: str
+    due_complete: bool = False
     closed: bool = False
 
 
@@ -32,7 +33,7 @@ class FakeTrelloTransport:
         if method == "GET" and path.endswith("/lists"):
             return list(self.lists)
         if method == "GET" and path.endswith("/cards"):
-            return [{"id": card.id, "name": card.name, "desc": card.description, "idList": card.id_list, "closed": card.closed} for card in self.cards]
+            return [{"id": card.id, "name": card.name, "desc": card.description, "idList": card.id_list, "dueComplete": card.due_complete, "closed": card.closed} for card in self.cards]
         if method == "POST" and path == "/1/lists":
             assert data["idBoard"] == "board-full"
             item = {"id": f"list-{len(self.lists) + 1}", "name": data["name"], "closed": False}
@@ -44,12 +45,15 @@ class FakeTrelloTransport:
             item["closed"] = data["value"] == "true"
             return item
         if method == "POST" and path == "/1/cards":
-            card = FakeCard(f"card-{len(self.cards) + 1}", data["name"], data["desc"], data["idList"])
+            card = FakeCard(f"card-{len(self.cards) + 1}", data["name"], data["desc"], data["idList"], data.get("dueComplete") == "true")
             self.cards.append(card)
             return {"id": card.id}
         if method == "PUT" and path.startswith("/1/cards/"):
             card = next(card for card in self.cards if path.endswith(card.id))
-            card.description = data["desc"]
+            if "desc" in data:
+                card.description = data["desc"]
+            if "dueComplete" in data:
+                card.due_complete = data["dueComplete"] == "true"
             return {"id": card.id}
         raise AssertionError(f"Unexpected request: {method} {path}")
 
@@ -91,6 +95,23 @@ def test_sync_preserves_human_notes_and_is_idempotent() -> None:
     assert updated.updated_cards == 0
     assert "Проверить макеты вместе с владельцем." in card.description
     assert repeated.created_lists == repeated.created_cards == repeated.updated_cards == repeated.archived_lists == 0
+
+
+def test_sync_marks_done_roadmap_cards_complete_and_keeps_open_work_unchecked() -> None:
+    fake = FakeTrelloTransport()
+    synchronizer = build_synchronizer(fake)
+
+    synchronizer.sync()
+
+    assert fake.card("S0.01").due_complete is True
+    assert fake.card("S1.02").due_complete is True
+    assert fake.card("S1.03").due_complete is False
+
+    fake.card("S0.01").due_complete = False
+    result = synchronizer.sync()
+
+    assert result.updated_cards == 1
+    assert fake.card("S0.01").due_complete is True
 
 
 def test_sync_archives_only_known_previous_generated_lists() -> None:
