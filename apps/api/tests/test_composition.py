@@ -179,6 +179,10 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         paths = set(application.openapi()["paths"])
         assert {
             "/healthz",
+            "/auth/login",
+            "/auth/setup",
+            "/auth/totp/confirm",
+            "/platform/organizations",
             "/policy/ai-approvals",
             "/policy/ai-approvals/{approval_id}/revocations",
             "/telegram/connections/phone/start",
@@ -194,6 +198,8 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         assert type(composition.connection_repository).__name__ == "SqlAlchemyConnectionRepository"
         assert type(composition.proxy_repository).__name__ == "SqlAlchemyProxyAssignmentRepository"
         assert type(composition.gateway_repository).__name__ == "SqlAlchemyMessageDeliveryRepository"
+        assert type(composition.auth_repository).__name__ == "SqlAlchemyAuthRepository"
+        assert type(composition.session_authenticator).__name__ == "SessionAuthenticator"
 
         status, body = asyncio.run(
             asgi_post_json(
@@ -264,8 +270,8 @@ def test_health_check_requires_database_at_current_migration_revision(tmp_path):
         with engine.begin() as connection:
             connection.execute(
                 text(
-                    "UPDATE alembic_version SET version_num = "
-                    "'0004_telegram_identity'"
+                        "UPDATE alembic_version SET version_num = "
+                        "'0011_auth_runtime_access'"
                 )
             )
         current_status, current_body = asyncio.run(asgi_get(application, "/healthz"))

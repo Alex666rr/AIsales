@@ -6,7 +6,9 @@ from alembic import context
 from sqlalchemy import engine_from_config, pool
 
 from apps.api.app.db.base import Base
+from apps.api.app.modules.audit import service as _audit_service  # noqa: F401
 from apps.api.app.modules.policy import repository as _policy_repository  # noqa: F401
+from apps.api.app.modules.shared import outbox as _outbox  # noqa: F401
 from telegram_connector.persistence import gateway_metadata, telegram_state_metadata
 
 config = context.config

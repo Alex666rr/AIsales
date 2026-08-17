@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Annotated, Callable, cast
 from uuid import UUID
 
@@ -41,6 +42,12 @@ from telegram_connector.persistence import (
 from telegram_connector.session_store import EncryptedSessionStore
 
 from .config import ApiSettings
+from .modules.auth.persistence import SqlAlchemyAuthRepository
+from .modules.auth.routes import build_auth_router, build_setup_router
+from .modules.auth.session_auth import SessionAuthenticator
+from .modules.auth.service import AuthService
+from .modules.organizations.provisioning import ProvisioningService
+from .modules.organizations.routes import build_platform_provisioning_router
 from .modules.policy.models import (
     AiOperation,
     AiOperationContext,
@@ -73,7 +80,7 @@ from .modules.telegram_connections.tdata_handoff import TdataHandoffService
 from .modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
-REQUIRED_SCHEMA_REVISIONS = frozenset({"0004_telegram_identity"})
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0011_auth_runtime_access"})
 
 
 class TelegramPolicyContextIssuer:
@@ -190,6 +197,13 @@ class ApplicationComposition:
     policy_context_issuer: TelegramPolicyContextIssuer
     policy_gate: PolicyGate
     protected_message_loader: PolicyProtectedMessageLoader
+    auth_repository: SqlAlchemyAuthRepository
+    auth_service: AuthService
+    session_authenticator: SessionAuthenticator
+    auth_router: object
+    provisioning_service: ProvisioningService
+    provisioning_router: object
+    setup_router: object
     policy_router: object
     connection_router: object
     tdata_router: object
@@ -240,6 +254,16 @@ def build_application_composition(
     )
     gateway_repository = SqlAlchemyMessageDeliveryRepository(sync_sessions)
     compatibility_repository = SqlAlchemyCompatibilityRegistry(sync_sessions)
+    resolved_sync_engine = sync_engine or cast(Engine, sync_sessions.kw.get("bind"))
+    if resolved_sync_engine is None:
+        raise ValueError("synchronous SQL engine is required")
+    auth_repository = SqlAlchemyAuthRepository(resolved_sync_engine)
+    auth_service = AuthService(
+        auth_repository,
+        encryption_key=key,
+        now=lambda: datetime.now(UTC),
+    )
+    session_authenticator = SessionAuthenticator(auth_service)
     gateway_factory = ComposedGatewayFactory(gateway_repository, compatibility_repository)
 
     api_hash = settings.telegram_api_hash.get_secret_value()
@@ -283,6 +307,17 @@ def build_application_composition(
         administration,
         principal_dependency=authenticator,
     )
+    auth_router = build_auth_router(auth_service)
+    provisioning_service = ProvisioningService(
+        auth_repository,
+        encryption_key=key,
+        now=lambda: datetime.now(UTC),
+    )
+    provisioning_router = build_platform_provisioning_router(
+        provisioning_service,
+        principal_dependency=authenticator,
+    )
+    setup_router = build_setup_router(provisioning_service)
     tdata_tickets = TdataTicketRegistry()
     tdata_handoffs = TdataHandoffService(
         tickets=tdata_tickets,
@@ -323,6 +358,13 @@ def build_application_composition(
         ),
         policy_gate=policy_gate,
         protected_message_loader=protected_loader,
+        auth_repository=auth_repository,
+        auth_service=auth_service,
+        session_authenticator=session_authenticator,
+        auth_router=auth_router,
+        provisioning_service=provisioning_service,
+        provisioning_router=provisioning_router,
+        setup_router=setup_router,
         policy_router=policy_router,
         connection_router=connection_router,
         tdata_router=tdata_router,
