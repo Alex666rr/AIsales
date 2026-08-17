@@ -9,8 +9,9 @@ from uuid import UUID
 from fastapi import FastAPI
 
 from app.modules.organizations import routes
+from app.modules.organizations.models import UserRole
 from app.modules.organizations.routes import CreateMemberRequest, MemberResponse
-from app.modules.organizations.provisioning import ProvisionedOwner
+from app.modules.organizations.provisioning import ProvisionedMember, ProvisionedOwner
 from app.modules.policy.models import PlatformOwnerPrincipal
 
 
@@ -41,6 +42,20 @@ class FakeProvisioningService:
             organization_id=UUID("10000000-0000-0000-0000-000000000001"),
             owner_email=owner_email,
             setup_token="setup-token-only-once",
+        )
+
+
+class FakeStaffInvitationService:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, UserRole]] = []
+
+    def invite(self, _context, *, email: str, role: UserRole) -> ProvisionedMember:
+        self.calls.append((email, role))
+        return ProvisionedMember(
+            user_id=UUID("30000000-0000-0000-0000-000000000001"),
+            email=email,
+            role=role,
+            setup_token="staff-setup-token-only-once",
         )
 
 
@@ -111,3 +126,41 @@ def test_platform_owner_route_provisions_the_first_company_owner():
         "setup_token": "setup-token-only-once",
     }
     assert service.calls == [("Acme", "owner@example.test")]
+
+
+def test_company_owner_route_returns_a_one_time_staff_setup_token():
+    service = FakeStaffInvitationService()
+    application = FastAPI()
+    application.include_router(
+        routes.build_staff_invitation_router(
+            service,
+            principal_dependency=_trusted_tenant,
+        )
+    )
+
+    status, body = asyncio.run(
+        _asgi_post(
+            application,
+            "/organizations/members/invitations",
+            {"email": "manager@example.test", "role": "manager"},
+        )
+    )
+
+    assert status == 201
+    assert json.loads(body) == {
+        "user_id": "30000000-0000-0000-0000-000000000001",
+        "email": "manager@example.test",
+        "role": "manager",
+        "setup_token": "staff-setup-token-only-once",
+    }
+    assert service.calls == [("manager@example.test", UserRole.MANAGER)]
+
+
+async def _trusted_tenant():
+    from app.modules.shared.commands import TenantContext
+
+    return TenantContext(
+        organization_id=UUID("10000000-0000-0000-0000-000000000001"),
+        actor_id=UUID("20000000-0000-0000-0000-000000000001"),
+        roles=frozenset({"company_owner"}),
+    )

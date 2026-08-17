@@ -36,7 +36,29 @@ def test_access_migration_creates_tenant_scoped_users_and_revocable_sessions():
 
 
 def test_api_readiness_requires_the_access_schema_revision():
-    assert composition.REQUIRED_SCHEMA_REVISIONS == frozenset({"0011_auth_runtime_access"})
+    assert composition.REQUIRED_SCHEMA_REVISIONS == frozenset({"0012_staff_lifecycle"})
+
+
+def test_staff_lifecycle_migration_adds_an_immutable_deactivation_timestamp():
+    migration = import_module("app.db.migrations.versions.0012_staff_lifecycle")
+    statements: list[str] = []
+
+    class FakeOperation:
+        def add_column(self, table_name, column):
+            statements.append(f"{table_name}:{column.name}")
+
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    original_operation = migration.op
+    migration.op = FakeOperation()
+    try:
+        migration.upgrade()
+    finally:
+        migration.op = original_operation
+
+    assert "app_users:disabled_at" in statements
+    assert "REVOKE DELETE ON TABLE public.app_users FROM PUBLIC" in statements
 
 
 def test_totp_enrollment_migration_uses_expiring_encrypted_challenges():

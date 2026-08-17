@@ -33,6 +33,7 @@ app_users = sa.Table(
     sa.Column("password_hash", sa.String(length=512), nullable=True),
     sa.Column("encrypted_totp_secret", sa.Text(), nullable=True),
     sa.Column("recovery_code_hashes", sa.JSON(), nullable=False),
+    sa.Column("disabled_at", sa.DateTime(timezone=True), nullable=True),
     sa.UniqueConstraint("email", name="uq_app_users_email"),
 )
 
@@ -126,6 +127,36 @@ class SqlAlchemyAuthRepository:
                 )
             )
 
+    def create_member_with_setup_invitation(
+        self,
+        *,
+        user: AuthUser,
+        invitation: SetupInvitation,
+    ) -> None:
+        """Persist a pending staff account and its setup grant in one transaction."""
+        with self._engine.begin() as connection:
+            connection.execute(
+                sa.insert(app_users).values(
+                    user_id=user.id,
+                    organization_id=user.organization_id,
+                    email=user.email,
+                    role=user.role.value,
+                    password_hash=user.password_hash,
+                    encrypted_totp_secret=user.encrypted_totp_secret,
+                    recovery_code_hashes=list(user.recovery_code_hashes),
+                    disabled_at=user.disabled_at,
+                )
+            )
+            connection.execute(
+                sa.insert(auth_setup_invitations).values(
+                    invitation_id=invitation.id,
+                    user_id=invitation.user_id,
+                    token_hash=invitation.token_hash,
+                    expires_at=invitation.expires_at,
+                    consumed_at=invitation.consumed_at,
+                )
+            )
+
     def get_user_by_email(self, email: str) -> AuthUser | None:
         with self._engine.connect() as connection:
             row = connection.execute(
@@ -139,6 +170,34 @@ class SqlAlchemyAuthRepository:
                 sa.select(app_users).where(app_users.c.user_id == user_id)
             ).mappings().first()
         return _to_user(row) if row is not None else None
+
+    def list_users_by_organization(self, organization_id: UUID) -> tuple[AuthUser, ...]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                sa.select(app_users)
+                .where(app_users.c.organization_id == organization_id)
+                .order_by(app_users.c.email)
+            ).mappings().all()
+        return tuple(_to_user(row) for row in rows)
+
+    def deactivate_user_and_revoke_sessions(self, user_id: UUID, *, now: datetime) -> AuthUser | None:
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                sa.select(app_users).where(app_users.c.user_id == user_id)
+            ).mappings().first()
+            if row is None:
+                return None
+            connection.execute(
+                sa.update(app_users)
+                .where(app_users.c.user_id == user_id, app_users.c.disabled_at.is_(None))
+                .values(disabled_at=now)
+            )
+            connection.execute(
+                sa.update(auth_sessions)
+                .where(auth_sessions.c.user_id == user_id, auth_sessions.c.revoked_at.is_(None))
+                .values(revoked_at=now)
+            )
+            return _to_user({**row, "disabled_at": now})
 
     def get_setup_invitation(self, user_id: UUID | None) -> SetupInvitation | None:
         if user_id is None:
@@ -325,6 +384,7 @@ class SqlAlchemyAuthRepository:
             "password_hash": user.password_hash,
             "encrypted_totp_secret": user.encrypted_totp_secret,
             "recovery_code_hashes": list(user.recovery_code_hashes),
+            "disabled_at": user.disabled_at,
         }
         with self._engine.begin() as connection:
             result = connection.execute(
@@ -370,6 +430,7 @@ def _to_user(row) -> AuthUser:
         password_hash=row["password_hash"],
         encrypted_totp_secret=row["encrypted_totp_secret"],
         recovery_code_hashes=tuple(row["recovery_code_hashes"]),
+        disabled_at=_as_utc(row["disabled_at"]) if row["disabled_at"] is not None else None,
     )
 
 

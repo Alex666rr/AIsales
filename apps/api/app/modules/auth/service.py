@@ -79,7 +79,12 @@ class AuthService:
         recovery_code: str | None = None,
     ) -> ServerSession:
         user = self._repository.get_user_by_email(email)
-        if user is None or user.password_hash is None or not verify_password(password, user.password_hash):
+        if (
+            user is None
+            or user.disabled_at is not None
+            or user.password_hash is None
+            or not verify_password(password, user.password_hash)
+        ):
             raise AuthenticationDenied("authentication was not accepted")
 
         mfa_verified = False
@@ -108,7 +113,12 @@ class AuthService:
 
     def require_session(self, session_id: UUID) -> ServerSession:
         session = self._repository.get_session(session_id)
-        if session is None or session.revoked_at is not None:
+        if (
+            session is None
+            or session.revoked_at is not None
+            or session.expires_at is None
+            or session.expires_at <= self._now()
+        ):
             raise SessionRevoked("session was not accepted")
         return session
 

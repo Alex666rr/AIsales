@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Protocol
-from fastapi import APIRouter, HTTPException, Response, status
+from typing import Awaitable, Callable, Protocol
+from uuid import UUID
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.auth.service import AuthenticationDenied, AuthService
+from app.modules.shared.commands import TenantContext
 from app.modules.organizations.provisioning import PendingTotpEnrollment
 
 
@@ -28,6 +30,16 @@ class LoginResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mfa_verified: bool
+
+
+class SessionResponse(BaseModel):
+    """Safe server-derived context for a browser session."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    actor_id: UUID
+    organization_id: UUID
+    roles: list[str]
 
 
 class SetupRequest(BaseModel):
@@ -65,7 +77,14 @@ class SetupActivator(Protocol):
     def activate_setup_token(self, setup_token: str, *, password: str) -> PendingTotpEnrollment: ...
 
 
-def build_auth_router(service: AuthService) -> APIRouter:
+SessionPrincipalDependency = Callable[[], Awaitable[TenantContext]]
+
+
+def build_auth_router(
+    service: AuthService,
+    *,
+    session_authenticator: SessionPrincipalDependency | None = None,
+) -> APIRouter:
     """Build auth routes with session IDs confined to secure HttpOnly cookies."""
     router = APIRouter(prefix="/auth", tags=["authentication"])
 
@@ -92,6 +111,17 @@ def build_auth_router(service: AuthService) -> APIRouter:
             path="/",
         )
         return LoginResponse(mfa_verified=session.mfa_verified)
+
+    if session_authenticator is not None:
+        @router.get("/session", response_model=SessionResponse)
+        async def current_session(
+            principal: TenantContext = Depends(session_authenticator),
+        ) -> SessionResponse:
+            return SessionResponse(
+                actor_id=principal.actor_id,
+                organization_id=principal.organization_id,
+                roles=sorted(principal.roles),
+            )
 
     @router.post("/totp/confirm", response_model=RecoveryCodesResponse)
     async def confirm_totp(request: TotpConfirmationRequest) -> RecoveryCodesResponse:

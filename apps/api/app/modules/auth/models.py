@@ -20,6 +20,7 @@ class AuthUser:
     password_hash: str | None
     encrypted_totp_secret: str | None
     recovery_code_hashes: tuple[str, ...]
+    disabled_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

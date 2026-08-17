@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.organizations.models import UserRole
-from app.modules.organizations.provisioning import ProvisionedOwner
+from app.modules.organizations.provisioning import ProvisionedMember, ProvisionedOwner
 from app.modules.policy.models import PlatformOwnerPrincipal
 from app.modules.organizations.service import OrganizationPermissionDenied, OrganizationService
 from app.modules.shared.commands import TenantContext
@@ -54,12 +54,28 @@ class MemberResponse(BaseModel):
     role: UserRole
 
 
+class ProvisionedMemberResponse(MemberResponse):
+    """One-time staff setup material, returned only to the authenticated owner."""
+
+    setup_token: str = Field(repr=False)
+
+
 PrincipalDependency = Callable[[], Awaitable[TenantContext]]
 PlatformOwnerDependency = Callable[[], Awaitable[PlatformOwnerPrincipal]]
 
 
 class OrganizationProvisioner(Protocol):
     def provision(self, organization_name: str, owner_email: str) -> ProvisionedOwner: ...
+
+
+class StaffInvitationIssuer(Protocol):
+    def invite(
+        self,
+        context: TenantContext,
+        *,
+        email: str,
+        role: UserRole,
+    ) -> ProvisionedMember: ...
 
 
 def build_organization_router(
@@ -77,6 +93,39 @@ def build_organization_router(
         except OrganizationPermissionDenied:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="operation forbidden") from None
         return MemberResponse(user_id=member.user_id, email=member.email, role=member.role)
+
+    return router
+
+
+def build_staff_invitation_router(
+    service: StaffInvitationIssuer,
+    *,
+    principal_dependency: PrincipalDependency,
+) -> APIRouter:
+    """Create pending staff accounts without giving callers control over the tenant."""
+    router = APIRouter(prefix="/organizations", tags=["organizations"])
+
+    @router.post(
+        "/members/invitations",
+        response_model=ProvisionedMemberResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_staff_invitation(
+        request: CreateMemberRequest,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> ProvisionedMemberResponse:
+        try:
+            member = service.invite(principal, email=request.email, role=request.role)
+        except OrganizationPermissionDenied:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="operation forbidden") from None
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="request was not accepted") from None
+        return ProvisionedMemberResponse(
+            user_id=member.user_id,
+            email=member.email,
+            role=member.role,
+            setup_token=member.setup_token,
+        )
 
     return router
 

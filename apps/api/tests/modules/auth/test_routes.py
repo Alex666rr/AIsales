@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.main import create_app
@@ -12,6 +13,7 @@ from app.modules.auth import routes
 from app.modules.auth.models import AuthUser, RecoveryCodes, ServerSession
 from app.modules.auth.passwords import hash_password
 from app.modules.auth.routes import build_auth_router
+from app.modules.auth.session_auth import SessionAuthenticator
 from app.modules.auth.service import AuthService
 from app.modules.organizations.models import UserRole
 from app.modules.organizations.provisioning import PendingTotpEnrollment
@@ -86,6 +88,38 @@ async def asgi_post(application, path: str, payload: dict[str, object]) -> tuple
     return start["status"], response, start["headers"]
 
 
+async def asgi_get(application, path: str, *, headers: list[tuple[bytes, bytes]] | None = None) -> tuple[int, bytes]:
+    messages: list[dict[str, object]] = []
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        messages.append(message)
+
+    await application(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "https",
+            "path": path,
+            "raw_path": path.encode("ascii"),
+            "query_string": b"",
+            "root_path": "",
+            "headers": headers or [],
+            "client": ("127.0.0.1", 1),
+            "server": ("testserver", 443),
+        },
+        receive,
+        send,
+    )
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    response = b"".join(message.get("body", b"") for message in messages if message["type"] == "http.response.body")
+    return start["status"], response
+
+
 def service() -> AuthService:
     return AuthService(FakeAuthRepository(), encryption_key=b"x" * 32, now=lambda: NOW)
 
@@ -107,6 +141,53 @@ def test_login_sets_only_a_secure_http_only_session_cookie():
     cookie = next(value for name, value in headers if name == b"set-cookie")
     assert b"HttpOnly" in cookie and b"Secure" in cookie and b"SameSite=lax" in cookie
     assert b"session_id" not in body
+
+
+def test_session_endpoint_returns_safe_authenticated_context_from_cookie():
+    auth = service()
+    application = create_app()
+    application.include_router(build_auth_router(auth, session_authenticator=SessionAuthenticator(auth)))
+    _status, _body, headers = asyncio.run(
+        asgi_post(
+            application,
+            "/auth/login",
+            {"email": "manager@example.test", "password": "correct password"},
+        )
+    )
+    cookie = next(value for name, value in headers if name == b"set-cookie").split(b";", 1)[0]
+
+    status, body = asyncio.run(asgi_get(application, "/auth/session", headers=[(b"cookie", cookie)]))
+
+    assert status == 200
+    assert json.loads(body) == {
+        "actor_id": str(USER_ID),
+        "organization_id": str(ORG_ID),
+        "roles": ["manager"],
+    }
+
+
+def test_session_endpoint_rejects_an_expired_cookie_session():
+    auth = service()
+    application = create_app()
+    application.include_router(build_auth_router(auth, session_authenticator=SessionAuthenticator(auth)))
+    _status, _body, headers = asyncio.run(
+        asgi_post(
+            application,
+            "/auth/login",
+            {"email": "manager@example.test", "password": "correct password"},
+        )
+    )
+    cookie = next(value for name, value in headers if name == b"set-cookie").split(b";", 1)[0]
+    repository = auth._repository
+    session_id = next(iter(repository.sessions))
+    repository.sessions[session_id] = replace(
+        repository.sessions[session_id],
+        expires_at=NOW - timedelta(seconds=1),
+    )
+
+    status, _body = asyncio.run(asgi_get(application, "/auth/session", headers=[(b"cookie", cookie)]))
+
+    assert status == 401
 
 
 def test_login_rejects_invalid_password_without_echoing_it():

@@ -1,11 +1,13 @@
 """FastAPI composition root for the test-only prototype."""
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 
 async def safe_request_validation_error_handler(
@@ -16,7 +18,7 @@ async def safe_request_validation_error_handler(
     return JSONResponse(status_code=422, content={"detail": "request validation failed"})
 
 
-def create_app(*, composition=None) -> FastAPI:
+def create_app(*, composition=None, web_directory: Path | None = None) -> FastAPI:
     """Build the control API without creating external connections at import time."""
     @asynccontextmanager
     async def lifespan(_api: FastAPI):
@@ -50,10 +52,30 @@ def create_app(*, composition=None) -> FastAPI:
         api.include_router(composition.auth_router)
         api.include_router(composition.setup_router)
         api.include_router(composition.provisioning_router)
+        api.include_router(composition.staff_invitation_router)
         api.include_router(composition.policy_router)
         api.include_router(composition.connection_router)
         api.include_router(composition.tdata_router)
         api.state.composition = composition
+
+    resolved_web_directory = web_directory or Path(__file__).resolve().parents[2] / "web" / "dist"
+    index = resolved_web_directory / "index.html"
+    assets = resolved_web_directory / "assets"
+    if index.is_file():
+        if assets.is_dir():
+            api.mount("/assets", StaticFiles(directory=assets), name="web-assets")
+
+        @api.get("/", include_in_schema=False)
+        async def web_shell() -> FileResponse:
+            return FileResponse(index)
+
+        @api.get("/setup", include_in_schema=False)
+        async def web_setup_shell() -> FileResponse:
+            """Serve the SPA directly for a staff member's one-time setup link."""
+            return FileResponse(
+                index,
+                headers={"Referrer-Policy": "no-referrer", "Cache-Control": "no-store"},
+            )
 
     return api
 
