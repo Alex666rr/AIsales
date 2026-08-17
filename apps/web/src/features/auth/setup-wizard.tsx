@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { QRCodeSVG } from "qrcode.react";
 
 import { activateSetup, ApiError, confirmTotp } from "../../shared/api/client";
 
@@ -63,7 +64,8 @@ export function SetupWizard({ setupToken }: { setupToken: string }) {
   if (enrollment) {
     return <main className="login-layout"><section className="login-card">
       <p className="eyebrow">AIsales</p><h1>Подключите приложение-аутентификатор</h1>
-      <p className="muted">Добавьте этот TOTP URI в приложение-аутентификатор вручную, затем введите шестизначный код.</p>
+      <p className="muted">Отсканируйте код в приложении-аутентификаторе, затем введите шестизначный код. URI оставлен как резервный ручной вариант.</p>
+      <QRCodeSVG data-testid="totp-qr" value={enrollment.totpUri} size={208} level="M" includeMargin />
       <input aria-label="TOTP URI" readOnly value={enrollment.totpUri} />
       <form onSubmit={submitTotp}><label>Код приложения-аутентификатора
         <input autoComplete="one-time-code" inputMode="numeric" pattern="[0-9]{6}" value={code} onChange={(event) => setCode(event.target.value)} required />

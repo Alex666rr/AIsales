@@ -19,6 +19,7 @@ describe("SetupWizard", () => {
     fireEvent.submit(screen.getByRole("button", { name: "Продолжить к TOTP" }).closest("form")!);
 
     expect(await screen.findByRole("heading", { name: "Подключите приложение-аутентификатор" })).toBeInTheDocument();
+    expect(screen.getByTestId("totp-qr")).toBeInTheDocument();
     expect(screen.getByDisplayValue(/otpauth:\/\/totp/)).toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledWith(
       "/auth/setup",
