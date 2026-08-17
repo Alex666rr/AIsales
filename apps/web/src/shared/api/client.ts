@@ -4,6 +4,13 @@ export type SessionContext = {
   roles: string[];
 };
 
+export type StaffInvitation = {
+  user_id: string;
+  email: string;
+  role: "administrator" | "manager";
+  setup_token: string;
+};
+
 export class ApiError extends Error {
   constructor(public readonly status: number) {
     super("The server did not accept the request.");
@@ -36,4 +43,38 @@ export async function login(input: {
     body: JSON.stringify(input),
   });
   if (!response.ok) throw new ApiError(response.status);
+}
+
+export async function createStaffInvitation(input: {
+  email: string;
+  role: "administrator" | "manager";
+}): Promise<StaffInvitation> {
+  const response = await request("/organizations/members/invitations", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<StaffInvitation>;
+}
+
+export async function activateSetup(setupToken: string, password: string): Promise<{
+  enrollment_token: string;
+  totp_uri: string;
+}> {
+  const response = await request("/auth/setup", {
+    method: "POST",
+    body: JSON.stringify({ setup_token: setupToken, password }),
+  });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<{ enrollment_token: string; totp_uri: string }>;
+}
+
+export async function confirmTotp(enrollmentToken: string, code: string): Promise<string[]> {
+  const response = await request("/auth/totp/confirm", {
+    method: "POST",
+    body: JSON.stringify({ enrollment_token: enrollmentToken, code }),
+  });
+  if (!response.ok) throw new ApiError(response.status);
+  const body = await response.json() as { recovery_codes: string[] };
+  return body.recovery_codes;
 }

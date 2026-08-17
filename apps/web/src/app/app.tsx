@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 
 import { getCurrentSession, SessionContext } from "../shared/api/client";
 import { LoginForm } from "../features/auth/login-form";
+import { StaffInvitationForm } from "../features/staff/staff-invitation-form";
+import { SetupWizard } from "../features/auth/setup-wizard";
 
 type AuthenticationState =
   | { kind: "loading" }
@@ -10,6 +12,8 @@ type AuthenticationState =
   | { kind: "unavailable" };
 
 export function App() {
+  const setupToken = new URLSearchParams(window.location.search).get("token");
+  if (window.location.pathname === "/setup") return <SetupWizard setupToken={setupToken ?? ""} />;
   const [state, setState] = useState<AuthenticationState>({ kind: "loading" });
 
   async function refreshSession() {
@@ -42,7 +46,7 @@ export function App() {
       <section className="workspace" id="overview">
         <p className="eyebrow">Stage 1 · S1.03</p>
         <h1>Администрирование</h1>
-        <p className="muted">Защищённая оболочка готова. Следующим шагом в этом интерфейсе будет управление приглашениями staff.</p>
+        <p className="muted">Управляйте доступом к своей организации через серверную сессию.</p>
         <article className="context-card">
           <h2>Текущий доступ</h2>
           <dl>
@@ -50,6 +54,7 @@ export function App() {
             <dt>Организация</dt><dd>{state.session.organization_id}</dd>
           </dl>
         </article>
+        {state.session.roles.includes("company_owner") && <StaffInvitationForm />}
       </section>
     </main>
   );

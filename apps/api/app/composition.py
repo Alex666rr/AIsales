@@ -46,8 +46,11 @@ from .modules.auth.persistence import SqlAlchemyAuthRepository
 from .modules.auth.routes import build_auth_router, build_setup_router
 from .modules.auth.session_auth import SessionAuthenticator
 from .modules.auth.service import AuthService
-from .modules.organizations.provisioning import ProvisioningService
-from .modules.organizations.routes import build_platform_provisioning_router
+from .modules.organizations.provisioning import ProvisioningService, StaffInvitationService
+from .modules.organizations.routes import (
+    build_platform_provisioning_router,
+    build_staff_invitation_router,
+)
 from .modules.policy.models import (
     AiOperation,
     AiOperationContext,
@@ -203,6 +206,7 @@ class ApplicationComposition:
     auth_router: object
     provisioning_service: ProvisioningService
     provisioning_router: object
+    staff_invitation_router: object
     setup_router: object
     policy_router: object
     connection_router: object
@@ -320,6 +324,10 @@ def build_application_composition(
         provisioning_service,
         principal_dependency=authenticator,
     )
+    staff_invitation_router = build_staff_invitation_router(
+        StaffInvitationService(auth_repository, now=lambda: datetime.now(UTC)),
+        principal_dependency=session_authenticator,
+    )
     setup_router = build_setup_router(provisioning_service)
     tdata_tickets = TdataTicketRegistry()
     tdata_handoffs = TdataHandoffService(
@@ -367,6 +375,7 @@ def build_application_composition(
         auth_router=auth_router,
         provisioning_service=provisioning_service,
         provisioning_router=provisioning_router,
+        staff_invitation_router=staff_invitation_router,
         setup_router=setup_router,
         policy_router=policy_router,
         connection_router=connection_router,

@@ -52,6 +52,7 @@ def create_app(*, composition=None, web_directory: Path | None = None) -> FastAP
         api.include_router(composition.auth_router)
         api.include_router(composition.setup_router)
         api.include_router(composition.provisioning_router)
+        api.include_router(composition.staff_invitation_router)
         api.include_router(composition.policy_router)
         api.include_router(composition.connection_router)
         api.include_router(composition.tdata_router)
@@ -67,6 +68,14 @@ def create_app(*, composition=None, web_directory: Path | None = None) -> FastAP
         @api.get("/", include_in_schema=False)
         async def web_shell() -> FileResponse:
             return FileResponse(index)
+
+        @api.get("/setup", include_in_schema=False)
+        async def web_setup_shell() -> FileResponse:
+            """Serve the SPA directly for a staff member's one-time setup link."""
+            return FileResponse(
+                index,
+                headers={"Referrer-Policy": "no-referrer", "Cache-Control": "no-store"},
+            )
 
     return api
 

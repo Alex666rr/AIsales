@@ -14,12 +14,24 @@ from app.modules.auth.models import AuthUser, SetupInvitation, TotpEnrollmentCha
 from app.modules.auth.passwords import hash_password, hash_recovery_code
 from app.modules.auth.totp import encrypt_totp_secret, enrollment_uri, generate_totp_secret
 from app.modules.organizations.models import UserRole
+from app.modules.organizations.service import OrganizationPermissionDenied
+from app.modules.shared.commands import TenantContext
 
 
 @dataclass(frozen=True, slots=True)
 class ProvisionedOwner:
     organization_id: UUID
     owner_email: str
+    setup_token: str = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ProvisionedMember:
+    """A staff user and their one-time setup grant, disclosed only to the owner."""
+
+    user_id: UUID
+    email: str
+    role: UserRole
     setup_token: str = field(repr=False)
 
 
@@ -54,6 +66,17 @@ class ProvisioningRepository(Protocol):
         password_hash: str,
         now: datetime,
     ) -> UUID | None: ...
+
+
+class StaffInvitationRepository(Protocol):
+    """Atomically write a pending staff member and its setup grant."""
+
+    def create_member_with_setup_invitation(
+        self,
+        *,
+        user: AuthUser,
+        invitation: SetupInvitation,
+    ) -> None: ...
 
     def consume_setup_invitation_and_create_totp_enrollment(
         self,
@@ -157,6 +180,56 @@ class ProvisioningService:
             enrollment_id=enrollment_id,
             enrollment_token=enrollment_token,
             totp_uri=enrollment_uri(secret=totp_secret, email=user.email),
+        )
+
+
+class StaffInvitationService:
+    """Allow a company owner to issue a one-time setup grant for internal staff."""
+
+    _SETUP_TOKEN_TTL = timedelta(hours=48)
+    _INVITABLE_ROLES = frozenset({UserRole.ADMINISTRATOR, UserRole.MANAGER})
+
+    def __init__(self, repository: StaffInvitationRepository, *, now: Callable[[], datetime]) -> None:
+        self._repository = repository
+        self._now = now
+
+    def invite(
+        self,
+        context: TenantContext,
+        *,
+        email: str,
+        role: UserRole,
+    ) -> ProvisionedMember:
+        if UserRole.COMPANY_OWNER.value not in context.roles or role not in self._INVITABLE_ROLES:
+            raise OrganizationPermissionDenied("company owner role is required")
+        if not email.strip() or "@" not in email:
+            raise ValueError("invalid staff invitation")
+        user = AuthUser(
+            id=uuid4(),
+            organization_id=context.organization_id,
+            email=email.strip(),
+            role=role,
+            password_hash=None,
+            encrypted_totp_secret=None,
+            recovery_code_hashes=(),
+        )
+        invitation_id = uuid4()
+        setup_token = f"{invitation_id}.{secrets.token_urlsafe(32)}"
+        invitation = SetupInvitation(
+            id=invitation_id,
+            user_id=user.id,
+            token_hash=hash_recovery_code(setup_token),
+            expires_at=self._now() + self._SETUP_TOKEN_TTL,
+        )
+        try:
+            self._repository.create_member_with_setup_invitation(user=user, invitation=invitation)
+        except IntegrityError as exc:
+            raise ValueError("staff email already exists") from exc
+        return ProvisionedMember(
+            user_id=user.id,
+            email=user.email,
+            role=user.role,
+            setup_token=setup_token,
         )
 
 

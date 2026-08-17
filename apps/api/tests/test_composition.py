@@ -182,6 +182,7 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
             "/auth/login",
             "/auth/setup",
             "/auth/totp/confirm",
+            "/organizations/members/invitations",
             "/platform/organizations",
             "/policy/ai-approvals",
             "/policy/ai-approvals/{approval_id}/revocations",

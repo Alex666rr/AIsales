@@ -126,6 +126,35 @@ class SqlAlchemyAuthRepository:
                 )
             )
 
+    def create_member_with_setup_invitation(
+        self,
+        *,
+        user: AuthUser,
+        invitation: SetupInvitation,
+    ) -> None:
+        """Persist a pending staff account and its setup grant in one transaction."""
+        with self._engine.begin() as connection:
+            connection.execute(
+                sa.insert(app_users).values(
+                    user_id=user.id,
+                    organization_id=user.organization_id,
+                    email=user.email,
+                    role=user.role.value,
+                    password_hash=user.password_hash,
+                    encrypted_totp_secret=user.encrypted_totp_secret,
+                    recovery_code_hashes=list(user.recovery_code_hashes),
+                )
+            )
+            connection.execute(
+                sa.insert(auth_setup_invitations).values(
+                    invitation_id=invitation.id,
+                    user_id=invitation.user_id,
+                    token_hash=invitation.token_hash,
+                    expires_at=invitation.expires_at,
+                    consumed_at=invitation.consumed_at,
+                )
+            )
+
     def get_user_by_email(self, email: str) -> AuthUser | None:
         with self._engine.connect() as connection:
             row = connection.execute(
