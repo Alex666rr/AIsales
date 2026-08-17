@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+from uuid import UUID
+
 from fastapi import APIRouter, HTTPException, Response, status
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -26,6 +29,19 @@ class LoginResponse(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     mfa_verified: bool
+
+
+class SetupRequest(BaseModel):
+    """Initial password setup material; neither value may appear in representations."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    setup_token: str = Field(min_length=1, max_length=1024, repr=False)
+    password: str = Field(min_length=12, max_length=512, repr=False)
+
+
+class SetupActivator(Protocol):
+    def activate_setup_token(self, setup_token: str, *, password: str) -> UUID: ...
 
 
 def build_auth_router(service: AuthService) -> APIRouter:
@@ -55,5 +71,23 @@ def build_auth_router(service: AuthService) -> APIRouter:
             path="/",
         )
         return LoginResponse(mfa_verified=session.mfa_verified)
+
+    return router
+
+
+def build_setup_router(activator: SetupActivator) -> APIRouter:
+    """Build the public one-time initial password setup endpoint."""
+    router = APIRouter(prefix="/auth", tags=["authentication"])
+
+    @router.post("/setup", status_code=status.HTTP_204_NO_CONTENT)
+    async def complete_setup(request: SetupRequest) -> Response:
+        try:
+            activator.activate_setup_token(request.setup_token, password=request.password)
+        except PermissionError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="setup token was not accepted",
+            ) from None
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     return router

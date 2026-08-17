@@ -8,7 +8,8 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from app.modules.auth.models import AuthUser, ServerSession
+from app.modules.auth.models import AuthUser, ServerSession, SetupInvitation
+from app.modules.auth.passwords import verify_recovery_code
 from app.modules.organizations.models import UserRole
 
 
@@ -29,10 +30,21 @@ app_users = sa.Table(
     sa.Column("organization_id", sa.Uuid(as_uuid=True), sa.ForeignKey("organizations.organization_id"), nullable=False),
     sa.Column("email", sa.String(length=320), nullable=False),
     sa.Column("role", sa.String(length=32), nullable=False),
-    sa.Column("password_hash", sa.String(length=512), nullable=False),
+    sa.Column("password_hash", sa.String(length=512), nullable=True),
     sa.Column("encrypted_totp_secret", sa.Text(), nullable=True),
     sa.Column("recovery_code_hashes", sa.JSON(), nullable=False),
-    sa.UniqueConstraint("organization_id", "email", name="uq_app_users_organization_email"),
+    sa.UniqueConstraint("email", name="uq_app_users_email"),
+)
+
+auth_setup_invitations = sa.Table(
+    "auth_setup_invitations",
+    AUTH_METADATA,
+    sa.Column("invitation_id", sa.Uuid(as_uuid=True), primary_key=True),
+    sa.Column("user_id", sa.Uuid(as_uuid=True), sa.ForeignKey("app_users.user_id"), nullable=False),
+    sa.Column("token_hash", sa.String(length=512), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.UniqueConstraint("user_id", name="uq_auth_setup_invitations_user_id"),
 )
 
 auth_sessions = sa.Table(
@@ -68,12 +80,94 @@ class SqlAlchemyAuthRepository:
                     sa.insert(organizations).values(organization_id=organization_id, name=name)
                 )
 
+    def provision_company_owner(
+        self,
+        *,
+        organization_id: UUID,
+        organization_name: str,
+        user: AuthUser,
+        invitation: SetupInvitation,
+    ) -> None:
+        """Persist the initial tenant boundary, owner, and setup grant atomically."""
+        with self._engine.begin() as connection:
+            connection.execute(
+                sa.insert(organizations).values(organization_id=organization_id, name=organization_name)
+            )
+            connection.execute(
+                sa.insert(app_users).values(
+                    user_id=user.id,
+                    organization_id=user.organization_id,
+                    email=user.email,
+                    role=user.role.value,
+                    password_hash=user.password_hash,
+                    encrypted_totp_secret=user.encrypted_totp_secret,
+                    recovery_code_hashes=list(user.recovery_code_hashes),
+                )
+            )
+            connection.execute(
+                sa.insert(auth_setup_invitations).values(
+                    invitation_id=invitation.id,
+                    user_id=invitation.user_id,
+                    token_hash=invitation.token_hash,
+                    expires_at=invitation.expires_at,
+                    consumed_at=invitation.consumed_at,
+                )
+            )
+
     def get_user_by_email(self, email: str) -> AuthUser | None:
         with self._engine.connect() as connection:
             row = connection.execute(
                 sa.select(app_users).where(app_users.c.email == email)
             ).mappings().first()
         return _to_user(row) if row is not None else None
+
+    def get_setup_invitation(self, user_id: UUID | None) -> SetupInvitation | None:
+        if user_id is None:
+            return None
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                sa.select(auth_setup_invitations).where(auth_setup_invitations.c.user_id == user_id)
+            ).mappings().first()
+        return _to_setup_invitation(row) if row is not None else None
+
+    def consume_setup_invitation(
+        self,
+        *,
+        invitation_id: UUID,
+        setup_token: str,
+        password_hash: str,
+        now: datetime,
+    ) -> UUID | None:
+        """Consume a valid setup grant and set its user's password exactly once."""
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                sa.select(auth_setup_invitations).where(
+                    auth_setup_invitations.c.invitation_id == invitation_id
+                )
+            ).mappings().first()
+            if (
+                row is None
+                or row["consumed_at"] is not None
+                or _as_utc(row["expires_at"]) <= now
+                or not verify_recovery_code(setup_token, row["token_hash"])
+            ):
+                return None
+            consumed = connection.execute(
+                sa.update(auth_setup_invitations)
+                .where(
+                    auth_setup_invitations.c.invitation_id == invitation_id,
+                    auth_setup_invitations.c.consumed_at.is_(None),
+                )
+                .values(consumed_at=now)
+            )
+            if consumed.rowcount != 1:
+                return None
+            connection.execute(
+                sa.update(app_users)
+                .where(app_users.c.user_id == row["user_id"])
+                .values(password_hash=password_hash)
+            )
+            return row["user_id"]
 
     def save_user(self, user: AuthUser) -> None:
         values = {
@@ -142,6 +236,16 @@ def _to_session(row) -> ServerSession:
         last_active_at=_as_utc(row["last_active_at"]),
         expires_at=_as_utc(row["expires_at"]),
         revoked_at=_as_utc(row["revoked_at"]) if row["revoked_at"] is not None else None,
+    )
+
+
+def _to_setup_invitation(row) -> SetupInvitation:
+    return SetupInvitation(
+        id=row["invitation_id"],
+        user_id=row["user_id"],
+        token_hash=row["token_hash"],
+        expires_at=_as_utc(row["expires_at"]),
+        consumed_at=_as_utc(row["consumed_at"]) if row["consumed_at"] is not None else None,
     )
 
 

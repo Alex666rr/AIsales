@@ -17,9 +17,20 @@ class AuthUser:
     organization_id: UUID
     email: str
     role: UserRole
-    password_hash: str
+    password_hash: str | None
     encrypted_totp_secret: str | None
     recovery_code_hashes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SetupInvitation:
+    """A one-time password setup grant whose raw secret is never persisted."""
+
+    id: UUID
+    user_id: UUID
+    token_hash: str
+    expires_at: datetime
+    consumed_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

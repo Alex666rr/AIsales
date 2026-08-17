@@ -43,9 +43,11 @@ from telegram_connector.session_store import EncryptedSessionStore
 
 from .config import ApiSettings
 from .modules.auth.persistence import SqlAlchemyAuthRepository
-from .modules.auth.routes import build_auth_router
+from .modules.auth.routes import build_auth_router, build_setup_router
 from .modules.auth.session_auth import SessionAuthenticator
 from .modules.auth.service import AuthService
+from .modules.organizations.provisioning import ProvisioningService
+from .modules.organizations.routes import build_platform_provisioning_router
 from .modules.policy.models import (
     AiOperation,
     AiOperationContext,
@@ -78,7 +80,7 @@ from .modules.telegram_connections.tdata_handoff import TdataHandoffService
 from .modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
-REQUIRED_SCHEMA_REVISIONS = frozenset({"0007_auth_session_lifecycle"})
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0009_global_user_email"})
 
 
 class TelegramPolicyContextIssuer:
@@ -199,6 +201,9 @@ class ApplicationComposition:
     auth_service: AuthService
     session_authenticator: SessionAuthenticator
     auth_router: object
+    provisioning_service: ProvisioningService
+    provisioning_router: object
+    setup_router: object
     policy_router: object
     connection_router: object
     tdata_router: object
@@ -303,6 +308,15 @@ def build_application_composition(
         principal_dependency=authenticator,
     )
     auth_router = build_auth_router(auth_service)
+    provisioning_service = ProvisioningService(
+        auth_repository,
+        now=lambda: datetime.now(UTC),
+    )
+    provisioning_router = build_platform_provisioning_router(
+        provisioning_service,
+        principal_dependency=authenticator,
+    )
+    setup_router = build_setup_router(provisioning_service)
     tdata_tickets = TdataTicketRegistry()
     tdata_handoffs = TdataHandoffService(
         tickets=tdata_tickets,
@@ -347,6 +361,9 @@ def build_application_composition(
         auth_service=auth_service,
         session_authenticator=session_authenticator,
         auth_router=auth_router,
+        provisioning_service=provisioning_service,
+        provisioning_router=provisioning_router,
+        setup_router=setup_router,
         policy_router=policy_router,
         connection_router=connection_router,
         tdata_router=tdata_router,

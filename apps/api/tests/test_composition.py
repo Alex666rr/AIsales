@@ -180,6 +180,7 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         assert {
             "/healthz",
             "/auth/login",
+            "/platform/organizations",
             "/policy/ai-approvals",
             "/policy/ai-approvals/{approval_id}/revocations",
             "/telegram/connections/phone/start",
@@ -268,7 +269,7 @@ def test_health_check_requires_database_at_current_migration_revision(tmp_path):
             connection.execute(
                 text(
                     "UPDATE alembic_version SET version_num = "
-                    "'0007_auth_session_lifecycle'"
+                    "'0009_global_user_email'"
                 )
             )
         current_status, current_body = asyncio.run(asgi_get(application, "/healthz"))

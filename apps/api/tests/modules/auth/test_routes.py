@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from app.main import create_app
+from app.modules.auth import routes
 from app.modules.auth.models import AuthUser, ServerSession
 from app.modules.auth.passwords import hash_password
 from app.modules.auth.routes import build_auth_router
@@ -118,3 +119,55 @@ def test_login_rejects_invalid_password_without_echoing_it():
 
     assert status == 401
     assert password.encode() not in body
+
+
+class FakeSetupActivator:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def activate_setup_token(self, setup_token: str, *, password: str) -> UUID:
+        self.calls.append((setup_token, password))
+        return USER_ID
+
+
+def test_setup_endpoint_uses_token_once_without_echoing_secrets():
+    activator = FakeSetupActivator()
+    application = create_app()
+    application.include_router(routes.build_setup_router(activator))
+    setup_token = "setup-token-SENTINEL"
+    password = "a secure password SENTINEL"
+
+    status, body, _headers = asyncio.run(
+        asgi_post(
+            application,
+            "/auth/setup",
+            {"setup_token": setup_token, "password": password},
+        )
+    )
+
+    assert status == 204
+    assert body == b""
+    assert activator.calls == [(setup_token, password)]
+
+
+class RejectingSetupActivator:
+    def activate_setup_token(self, setup_token: str, *, password: str) -> UUID:
+        raise PermissionError("expired setup-token-SENTINEL")
+
+
+def test_setup_endpoint_rejects_a_token_without_echoing_it():
+    application = create_app()
+    application.include_router(routes.build_setup_router(RejectingSetupActivator()))
+    setup_token = "setup-token-SENTINEL"
+
+    status, body, _headers = asyncio.run(
+        asgi_post(
+            application,
+            "/auth/setup",
+            {"setup_token": setup_token, "password": "a secure password"},
+        )
+    )
+
+    assert status == 401
+    assert setup_token.encode() not in body
+    assert b"expired" not in body

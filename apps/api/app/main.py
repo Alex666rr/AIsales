@@ -48,6 +48,8 @@ def create_app(*, composition=None) -> FastAPI:
 
     if composition is not None:
         api.include_router(composition.auth_router)
+        api.include_router(composition.setup_router)
+        api.include_router(composition.provisioning_router)
         api.include_router(composition.policy_router)
         api.include_router(composition.connection_router)
         api.include_router(composition.tdata_router)
