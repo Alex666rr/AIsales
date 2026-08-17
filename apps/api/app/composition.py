@@ -80,7 +80,7 @@ from .modules.telegram_connections.tdata_handoff import TdataHandoffService
 from .modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
-REQUIRED_SCHEMA_REVISIONS = frozenset({"0009_global_user_email"})
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0011_auth_runtime_access"})
 
 
 class TelegramPolicyContextIssuer:
@@ -310,6 +310,7 @@ def build_application_composition(
     auth_router = build_auth_router(auth_service)
     provisioning_service = ProvisioningService(
         auth_repository,
+        encryption_key=key,
         now=lambda: datetime.now(UTC),
     )
     provisioning_router = build_platform_provisioning_router(

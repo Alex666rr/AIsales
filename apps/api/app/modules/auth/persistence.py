@@ -8,7 +8,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.engine import Engine
 
-from app.modules.auth.models import AuthUser, ServerSession, SetupInvitation
+from app.modules.auth.models import AuthUser, ServerSession, SetupInvitation, TotpEnrollmentChallenge
 from app.modules.auth.passwords import verify_recovery_code
 from app.modules.organizations.models import UserRole
 
@@ -45,6 +45,18 @@ auth_setup_invitations = sa.Table(
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
     sa.UniqueConstraint("user_id", name="uq_auth_setup_invitations_user_id"),
+)
+
+auth_totp_enrollments = sa.Table(
+    "auth_totp_enrollments",
+    AUTH_METADATA,
+    sa.Column("enrollment_id", sa.Uuid(as_uuid=True), primary_key=True),
+    sa.Column("user_id", sa.Uuid(as_uuid=True), sa.ForeignKey("app_users.user_id"), nullable=False),
+    sa.Column("token_hash", sa.String(length=512), nullable=False),
+    sa.Column("encrypted_secret", sa.Text(), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("consumed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.UniqueConstraint("user_id", name="uq_auth_totp_enrollments_user_id"),
 )
 
 auth_sessions = sa.Table(
@@ -121,6 +133,13 @@ class SqlAlchemyAuthRepository:
             ).mappings().first()
         return _to_user(row) if row is not None else None
 
+    def get_user_by_id(self, user_id: UUID) -> AuthUser | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                sa.select(app_users).where(app_users.c.user_id == user_id)
+            ).mappings().first()
+        return _to_user(row) if row is not None else None
+
     def get_setup_invitation(self, user_id: UUID | None) -> SetupInvitation | None:
         if user_id is None:
             return None
@@ -129,6 +148,84 @@ class SqlAlchemyAuthRepository:
                 sa.select(auth_setup_invitations).where(auth_setup_invitations.c.user_id == user_id)
             ).mappings().first()
         return _to_setup_invitation(row) if row is not None else None
+
+    def get_setup_invitation_by_id(self, invitation_id: UUID) -> SetupInvitation | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                sa.select(auth_setup_invitations).where(
+                    auth_setup_invitations.c.invitation_id == invitation_id
+                )
+            ).mappings().first()
+        return _to_setup_invitation(row) if row is not None else None
+
+    def create_totp_enrollment(self, challenge: TotpEnrollmentChallenge) -> None:
+        with self._engine.begin() as connection:
+            connection.execute(
+                sa.insert(auth_totp_enrollments).values(
+                    enrollment_id=challenge.id,
+                    user_id=challenge.user_id,
+                    token_hash=challenge.token_hash,
+                    encrypted_secret=challenge.encrypted_secret,
+                    expires_at=challenge.expires_at,
+                    consumed_at=challenge.consumed_at,
+                )
+            )
+
+    def get_totp_enrollment(self, enrollment_id: UUID) -> TotpEnrollmentChallenge | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(
+                sa.select(auth_totp_enrollments).where(
+                    auth_totp_enrollments.c.enrollment_id == enrollment_id
+                )
+            ).mappings().first()
+        return _to_totp_enrollment(row) if row is not None else None
+
+    def consume_totp_enrollment(
+        self,
+        *,
+        challenge: TotpEnrollmentChallenge,
+        enrollment_token: str,
+        recovery_code_hashes: tuple[str, ...],
+        now: datetime,
+    ) -> bool:
+        """Atomically consume an enrollment after its TOTP code was verified."""
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                sa.select(auth_totp_enrollments).where(
+                    auth_totp_enrollments.c.enrollment_id == challenge.id
+                )
+            ).mappings().first()
+            if (
+                row is None
+                or row["user_id"] != challenge.user_id
+                or row["consumed_at"] is not None
+                or _as_utc(row["expires_at"]) <= now
+                or not verify_recovery_code(enrollment_token, row["token_hash"])
+            ):
+                return False
+            consumed = connection.execute(
+                sa.update(auth_totp_enrollments)
+                .where(
+                    auth_totp_enrollments.c.enrollment_id == challenge.id,
+                    auth_totp_enrollments.c.user_id == challenge.user_id,
+                    auth_totp_enrollments.c.consumed_at.is_(None),
+                    auth_totp_enrollments.c.expires_at > now,
+                    auth_totp_enrollments.c.token_hash == challenge.token_hash,
+                    auth_totp_enrollments.c.encrypted_secret == challenge.encrypted_secret,
+                )
+                .values(consumed_at=now)
+            )
+            if consumed.rowcount != 1:
+                return False
+            connection.execute(
+                sa.update(app_users)
+                .where(app_users.c.user_id == challenge.user_id)
+                .values(
+                    encrypted_totp_secret=challenge.encrypted_secret,
+                    recovery_code_hashes=list(recovery_code_hashes),
+                )
+            )
+            return True
 
     def consume_setup_invitation(
         self,
@@ -166,6 +263,57 @@ class SqlAlchemyAuthRepository:
                 sa.update(app_users)
                 .where(app_users.c.user_id == row["user_id"])
                 .values(password_hash=password_hash)
+            )
+            return row["user_id"]
+
+    def consume_setup_invitation_and_create_totp_enrollment(
+        self,
+        *,
+        invitation_id: UUID,
+        setup_token: str,
+        password_hash: str,
+        challenge: TotpEnrollmentChallenge,
+        now: datetime,
+    ) -> UUID | None:
+        """Atomically consume setup material, set a password, and create TOTP enrollment."""
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                sa.select(auth_setup_invitations).where(
+                    auth_setup_invitations.c.invitation_id == invitation_id
+                )
+            ).mappings().first()
+            if (
+                row is None
+                or row["consumed_at"] is not None
+                or _as_utc(row["expires_at"]) <= now
+                or not verify_recovery_code(setup_token, row["token_hash"])
+                or row["user_id"] != challenge.user_id
+            ):
+                return None
+            consumed = connection.execute(
+                sa.update(auth_setup_invitations)
+                .where(
+                    auth_setup_invitations.c.invitation_id == invitation_id,
+                    auth_setup_invitations.c.consumed_at.is_(None),
+                )
+                .values(consumed_at=now)
+            )
+            if consumed.rowcount != 1:
+                return None
+            connection.execute(
+                sa.update(app_users)
+                .where(app_users.c.user_id == row["user_id"])
+                .values(password_hash=password_hash)
+            )
+            connection.execute(
+                sa.insert(auth_totp_enrollments).values(
+                    enrollment_id=challenge.id,
+                    user_id=challenge.user_id,
+                    token_hash=challenge.token_hash,
+                    encrypted_secret=challenge.encrypted_secret,
+                    expires_at=challenge.expires_at,
+                    consumed_at=challenge.consumed_at,
+                )
             )
             return row["user_id"]
 
@@ -244,6 +392,17 @@ def _to_setup_invitation(row) -> SetupInvitation:
         id=row["invitation_id"],
         user_id=row["user_id"],
         token_hash=row["token_hash"],
+        expires_at=_as_utc(row["expires_at"]),
+        consumed_at=_as_utc(row["consumed_at"]) if row["consumed_at"] is not None else None,
+    )
+
+
+def _to_totp_enrollment(row) -> TotpEnrollmentChallenge:
+    return TotpEnrollmentChallenge(
+        id=row["enrollment_id"],
+        user_id=row["user_id"],
+        token_hash=row["token_hash"],
+        encrypted_secret=row["encrypted_secret"],
         expires_at=_as_utc(row["expires_at"]),
         consumed_at=_as_utc(row["consumed_at"]) if row["consumed_at"] is not None else None,
     )

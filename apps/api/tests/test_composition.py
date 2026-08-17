@@ -180,6 +180,8 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
         assert {
             "/healthz",
             "/auth/login",
+            "/auth/setup",
+            "/auth/totp/confirm",
             "/platform/organizations",
             "/policy/ai-approvals",
             "/policy/ai-approvals/{approval_id}/revocations",
@@ -268,8 +270,8 @@ def test_health_check_requires_database_at_current_migration_revision(tmp_path):
         with engine.begin() as connection:
             connection.execute(
                 text(
-                    "UPDATE alembic_version SET version_num = "
-                    "'0009_global_user_email'"
+                        "UPDATE alembic_version SET version_num = "
+                        "'0011_auth_runtime_access'"
                 )
             )
         current_status, current_body = asyncio.run(asgi_get(application, "/healthz"))

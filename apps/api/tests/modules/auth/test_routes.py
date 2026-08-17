@@ -9,11 +9,12 @@ from uuid import UUID
 
 from app.main import create_app
 from app.modules.auth import routes
-from app.modules.auth.models import AuthUser, ServerSession
+from app.modules.auth.models import AuthUser, RecoveryCodes, ServerSession
 from app.modules.auth.passwords import hash_password
 from app.modules.auth.routes import build_auth_router
 from app.modules.auth.service import AuthService
 from app.modules.organizations.models import UserRole
+from app.modules.organizations.provisioning import PendingTotpEnrollment
 
 
 ORG_ID = UUID("60000000-0000-0000-0000-000000000001")
@@ -125,9 +126,13 @@ class FakeSetupActivator:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str]] = []
 
-    def activate_setup_token(self, setup_token: str, *, password: str) -> UUID:
+    def activate_setup_token(self, setup_token: str, *, password: str) -> PendingTotpEnrollment:
         self.calls.append((setup_token, password))
-        return USER_ID
+        return PendingTotpEnrollment(
+            enrollment_id=USER_ID,
+            enrollment_token="enrollment-token-only-once",
+            totp_uri="otpauth://totp/AIsales:owner%40example.test?secret=scan-only",
+        )
 
 
 def test_setup_endpoint_uses_token_once_without_echoing_secrets():
@@ -145,13 +150,18 @@ def test_setup_endpoint_uses_token_once_without_echoing_secrets():
         )
     )
 
-    assert status == 204
-    assert body == b""
+    assert status == 200
+    assert json.loads(body) == {
+        "enrollment_token": "enrollment-token-only-once",
+        "totp_uri": "otpauth://totp/AIsales:owner%40example.test?secret=scan-only",
+    }
+    assert setup_token.encode() not in body
+    assert password.encode() not in body
     assert activator.calls == [(setup_token, password)]
 
 
 class RejectingSetupActivator:
-    def activate_setup_token(self, setup_token: str, *, password: str) -> UUID:
+    def activate_setup_token(self, setup_token: str, *, password: str) -> PendingTotpEnrollment:
         raise PermissionError("expired setup-token-SENTINEL")
 
 
@@ -171,3 +181,26 @@ def test_setup_endpoint_rejects_a_token_without_echoing_it():
     assert status == 401
     assert setup_token.encode() not in body
     assert b"expired" not in body
+
+
+class FakeTotpConfirmationService:
+    def confirm_totp_enrollment(self, *, enrollment_token: str, code: str) -> RecoveryCodes:
+        if enrollment_token != "enrollment-token-only-once" or code != "123456":
+            raise AuthenticationDenied("not accepted")
+        return RecoveryCodes(("recovery-1", "recovery-2"))
+
+
+def test_totp_confirmation_returns_recovery_codes_only_after_valid_code():
+    application = create_app()
+    application.include_router(build_auth_router(FakeTotpConfirmationService()))
+
+    status, body, _headers = asyncio.run(
+        asgi_post(
+            application,
+            "/auth/totp/confirm",
+            {"enrollment_token": "enrollment-token-only-once", "code": "123456"},
+        )
+    )
+
+    assert status == 200
+    assert json.loads(body) == {"recovery_codes": ["recovery-1", "recovery-2"]}

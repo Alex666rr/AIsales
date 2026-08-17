@@ -36,4 +36,61 @@ def test_access_migration_creates_tenant_scoped_users_and_revocable_sessions():
 
 
 def test_api_readiness_requires_the_access_schema_revision():
-    assert composition.REQUIRED_SCHEMA_REVISIONS == frozenset({"0009_global_user_email"})
+    assert composition.REQUIRED_SCHEMA_REVISIONS == frozenset({"0011_auth_runtime_access"})
+
+
+def test_totp_enrollment_migration_uses_expiring_encrypted_challenges():
+    migration = import_module("app.db.migrations.versions.0010_totp_enrollment")
+
+    statements: list[str] = []
+
+    class FakeOperation:
+        def create_table(self, name, *_columns, **_kwargs):
+            statements.append(name)
+
+        def create_index(self, name, table_name, columns):
+            statements.append(f"{name}:{table_name}:{','.join(columns)}")
+
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    original_operation = migration.op
+    migration.op = FakeOperation()
+    try:
+        migration.upgrade()
+    finally:
+        migration.op = original_operation
+
+    assert "auth_totp_enrollments" in statements
+    assert "ix_auth_totp_enrollments_expires_at:auth_totp_enrollments:expires_at" in statements
+    assert any("REVOKE UPDATE, DELETE ON TABLE auth_totp_enrollments FROM PUBLIC" in value for value in statements)
+
+
+def test_auth_runtime_access_migration_grants_only_the_required_auth_tables():
+    migration = import_module("app.db.migrations.versions.0011_auth_runtime_access")
+
+    statements: list[str] = []
+
+    class FakeOperation:
+        def execute(self, statement):
+            statements.append(str(statement))
+
+    original_operation = migration.op
+    migration.op = FakeOperation()
+    try:
+        migration.upgrade()
+    finally:
+        migration.op = original_operation
+
+    for table_name in (
+        "organizations",
+        "app_users",
+        "auth_setup_invitations",
+        "auth_totp_enrollments",
+        "auth_sessions",
+    ):
+        assert f"REVOKE ALL ON TABLE public.{table_name} FROM PUBLIC" in statements
+        assert (
+            f"GRANT SELECT, INSERT, UPDATE ON TABLE public.{table_name} TO ai_sales_runtime"
+            in statements
+        )

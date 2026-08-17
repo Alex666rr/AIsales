@@ -8,8 +8,22 @@ import hmac
 import os
 import struct
 from datetime import UTC, datetime
+from urllib.parse import quote, urlencode
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+
+def generate_totp_secret() -> bytes:
+    """Generate the 160-bit secret material used by a TOTP authenticator."""
+    return os.urandom(20)
+
+
+def enrollment_uri(*, secret: bytes, email: str, issuer: str = "AIsales") -> str:
+    """Build a scan-only otpauth URI; callers must not persist or log it."""
+    encoded_secret = base64.b32encode(secret).decode("ascii").rstrip("=")
+    label = quote(f"{issuer}:{email}", safe=":")
+    query = urlencode({"secret": encoded_secret, "issuer": issuer, "algorithm": "SHA1", "digits": "6", "period": "30"})
+    return f"otpauth://totp/{label}?{query}"
 
 
 def encrypt_totp_secret(secret: bytes, encryption_key: bytes) -> str:

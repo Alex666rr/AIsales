@@ -13,13 +13,14 @@ from app.modules.organizations.provisioning import ProvisioningService
 
 
 NOW = datetime(2026, 8, 17, 12, 0, tzinfo=UTC)
+KEY = b"p" * 32
 
 
 def test_provisioning_persists_a_non_reversible_one_time_setup_token(tmp_path) -> None:
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'provisioning.db'}")
     AUTH_METADATA.create_all(engine)
     repository = SqlAlchemyAuthRepository(engine)
-    service = ProvisioningService(repository, now=lambda: NOW)
+    service = ProvisioningService(repository, encryption_key=KEY, now=lambda: NOW)
 
     try:
         result = service.provision("Acme", "owner@example.test")
@@ -44,7 +45,7 @@ def test_setup_token_sets_a_password_exactly_once(tmp_path) -> None:
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'activation.db'}")
     AUTH_METADATA.create_all(engine)
     repository = SqlAlchemyAuthRepository(engine)
-    service = ProvisioningService(repository, now=lambda: NOW)
+    service = ProvisioningService(repository, encryption_key=KEY, now=lambda: NOW)
 
     try:
         invitation = service.provision("Acme", "owner@example.test")
@@ -69,9 +70,10 @@ def test_expired_setup_token_cannot_set_a_password(tmp_path) -> None:
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'expired-activation.db'}")
     AUTH_METADATA.create_all(engine)
     repository = SqlAlchemyAuthRepository(engine)
-    issuer = ProvisioningService(repository, now=lambda: NOW)
+    issuer = ProvisioningService(repository, encryption_key=KEY, now=lambda: NOW)
     expired_consumer = ProvisioningService(
         repository,
+        encryption_key=KEY,
         now=lambda: NOW + timedelta(hours=49),
     )
 
@@ -92,12 +94,34 @@ def test_owner_email_is_unique_across_organizations(tmp_path) -> None:
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'unique-email.db'}")
     AUTH_METADATA.create_all(engine)
     repository = SqlAlchemyAuthRepository(engine)
-    service = ProvisioningService(repository, now=lambda: NOW)
+    service = ProvisioningService(repository, encryption_key=KEY, now=lambda: NOW)
 
     try:
         service.provision("Acme", "owner@example.test")
 
         with pytest.raises(ValueError, match="owner email already exists"):
             service.provision("Beta", "owner@example.test")
+    finally:
+        engine.dispose()
+
+
+def test_setup_activation_returns_a_one_time_totp_enrollment_uri(tmp_path) -> None:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'setup-totp.db'}")
+    AUTH_METADATA.create_all(engine)
+    repository = SqlAlchemyAuthRepository(engine)
+    service = ProvisioningService(repository, encryption_key=KEY, now=lambda: NOW)
+
+    try:
+        invitation = service.provision("Acme", "owner@example.test")
+
+        pending = service.activate_setup_token(invitation.setup_token, password="a secure password")
+
+        stored = repository.get_totp_enrollment(pending.enrollment_id)
+        assert pending.totp_uri.startswith("otpauth://totp/AIsales:")
+        assert pending.enrollment_token not in pending.totp_uri
+        assert stored is not None
+        assert verify_recovery_code(pending.enrollment_token, stored.token_hash)
+        assert "enrollment_token" not in repr(pending)
+        assert "totp_uri" not in repr(pending)
     finally:
         engine.dispose()

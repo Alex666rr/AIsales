@@ -4,19 +4,31 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta
+import secrets
 from typing import Callable, Protocol
 from uuid import UUID, uuid4
 
 from cryptography.exceptions import InvalidTag
 
-from app.modules.auth.models import AuthUser, ServerSession
-from app.modules.auth.passwords import verify_password, verify_recovery_code
+from app.modules.auth.models import AuthUser, RecoveryCodes, ServerSession, TotpEnrollmentChallenge
+from app.modules.auth.passwords import hash_recovery_code, verify_password, verify_recovery_code
 from app.modules.auth.totp import decrypt_totp_secret, verify_totp
 from app.modules.organizations.models import UserRole
 
 
 class AuthRepository(Protocol):
     def get_user_by_email(self, email: str) -> AuthUser | None: ...
+
+    def get_totp_enrollment(self, enrollment_id: UUID) -> TotpEnrollmentChallenge | None: ...
+
+    def consume_totp_enrollment(
+        self,
+        *,
+        challenge: TotpEnrollmentChallenge,
+        enrollment_token: str,
+        recovery_code_hashes: tuple[str, ...],
+        now: datetime,
+    ) -> bool: ...
 
     def save_user(self, user: AuthUser) -> None: ...
 
@@ -100,6 +112,36 @@ class AuthService:
             raise SessionRevoked("session was not accepted")
         return session
 
+    def confirm_totp_enrollment(self, *, enrollment_token: str, code: str) -> RecoveryCodes:
+        """Persist a verified TOTP factor and return recovery codes exactly once."""
+        enrollment_id = _enrollment_id_from_token(enrollment_token)
+        if enrollment_id is None:
+            raise AuthenticationDenied("authentication was not accepted")
+        challenge = self._repository.get_totp_enrollment(enrollment_id)
+        now = self._now()
+        if (
+            challenge is None
+            or challenge.consumed_at is not None
+            or challenge.expires_at <= now
+            or not verify_recovery_code(enrollment_token, challenge.token_hash)
+        ):
+            raise AuthenticationDenied("authentication was not accepted")
+        try:
+            secret = decrypt_totp_secret(challenge.encrypted_secret, self._encryption_key)
+        except (InvalidTag, ValueError) as exc:
+            raise AuthenticationDenied("authentication was not accepted") from exc
+        if not verify_totp(secret, code, now):
+            raise AuthenticationDenied("authentication was not accepted")
+        recovery_codes = RecoveryCodes(tuple(secrets.token_urlsafe(10) for _ in range(10)))
+        if not self._repository.consume_totp_enrollment(
+            challenge=challenge,
+            enrollment_token=enrollment_token,
+            recovery_code_hashes=tuple(hash_recovery_code(value) for value in recovery_codes),
+            now=now,
+        ):
+            raise AuthenticationDenied("authentication was not accepted")
+        return recovery_codes
+
     def _verify_second_factor(
         self,
         user: AuthUser,
@@ -127,3 +169,13 @@ class AuthService:
                     return updated_user
 
         raise SecondFactorRequired("second factor is required")
+
+
+def _enrollment_id_from_token(token: str) -> UUID | None:
+    enrollment_id, separator, secret = token.partition(".")
+    if not separator or not secret:
+        return None
+    try:
+        return UUID(enrollment_id)
+    except ValueError:
+        return None
