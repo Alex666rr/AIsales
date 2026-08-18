@@ -36,12 +36,30 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Доступ команды" })).toBeInTheDocument();
   });
 
-  it("shows the login form when there is no active server session", async () => {
+  it("shows the premium login form when there is no active server session", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Вход в AIsales" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "AIsales" })).toBeInTheDocument();
+    expect(screen.getByText("Рабочее пространство продаж")).toBeInTheDocument();
+    expect(screen.getByTestId("login-monogram")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByLabelText("Электронная почта")).toBeInTheDocument();
+    expect(screen.getByLabelText("Google Authenticator")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Использовать код восстановления" })).toBeInTheDocument();
+  });
+
+  it("switches the second-factor field to a recovery code without a checkbox", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+
+    render(<App />);
+
+    const recoveryAction = await screen.findByRole("button", { name: "Использовать код восстановления" });
+    fireEvent.click(recoveryAction);
+
+    expect(screen.getByLabelText("Код восстановления")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Вернуться к Google Authenticator" })).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
   it("does not expose staff invitations to a non-owner", async () => {
