@@ -46,7 +46,9 @@ describe("App", () => {
     expect(screen.getByTestId("login-monogram")).toHaveAttribute("aria-hidden", "true");
     expect(screen.getByLabelText("Электронная почта")).toBeInTheDocument();
     expect(screen.getByLabelText("Google Authenticator")).toBeInTheDocument();
+    expect(screen.getByText("Нет доступа к приложению?")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Использовать код восстановления" })).toBeInTheDocument();
+    expect(screen.getAllByTestId("login-field-icon")).toHaveLength(3);
   });
 
   it("switches the second-factor field to a recovery code without a checkbox", async () => {
