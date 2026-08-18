@@ -26,13 +26,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 ::selection { background: #5149bd; color: var(--text); }
 
 .centered, .login-layout { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
-.login-layout { background: radial-gradient(circle at 50% 42%, rgb(92 76 214 / 21%), transparent 25rem), radial-gradient(circle at 10% 14%, rgb(38 51 126 / 30%), transparent 29rem), #0a1020; }
-.login-card { width: min(100%, 520px); background: rgb(10 22 47 / 68%); border: 1px solid rgb(113 132 184 / 38%); border-radius: 12px; box-shadow: 0 26px 74px rgb(0 0 0 / 38%); padding: 48px 40px 32px; backdrop-filter: blur(18px); }
+.login-layout { background: #0b1222; }
+.login-card { width: min(100%, 520px); background: #101c32; border: 1px solid #2a3d5d; border-radius: 12px; box-shadow: 0 18px 45px rgb(0 0 0 / 26%); padding: 48px 40px 32px; }
 .login-brand { align-items: center; display: grid; justify-items: center; text-align: center; }
-.login-monogram { align-items: center; background: radial-gradient(circle at 35% 24%, #d6c4ff, #7f5fff 46%, #3a247a); border: 1px solid rgb(193 167 255 / 80%); border-radius: 26px; box-shadow: 0 0 24px rgb(147 108 255 / 56%), inset 0 1px 10px rgb(255 255 255 / 48%); color: white; display: inline-flex; height: 78px; justify-content: center; transform: rotate(-5deg); width: 78px; }
-.login-monogram svg { height: 60px; width: 60px; }
-.monogram-left { fill: #fbf9ff; }
-.monogram-cut { fill: #7658e8; }
+.login-monogram { align-items: center; color: #b6a3ff; display: inline-flex; height: 82px; justify-content: center; width: 82px; }
+.login-monogram svg { height: 76px; width: 76px; }
+.monogram-ring, .monogram-stroke { fill: none; stroke: currentcolor; stroke-linecap: round; stroke-linejoin: round; }
+.monogram-ring { stroke-width: 2.2; }
+.monogram-stroke { stroke-width: 3.4; }
+.monogram-point { fill: currentcolor; }
 .login-brand h1 { font-family: Georgia, "Times New Roman", serif; font-size: clamp(2.75rem, 8vw, 3.35rem); font-weight: 500; letter-spacing: -.05em; line-height: 1; margin: 28px 0 0; }
 .login-subtitle { color: #b5bdd4; font-size: 1.125rem; font-weight: 400; margin: 13px 0 0; }
 .eyebrow { color: #b7b2ff; font-size: .75rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
@@ -53,14 +55,16 @@ select option { background: var(--surface-raised); }
 .login-card input:focus { border-color: #aa92ff; box-shadow: 0 0 0 3px rgb(155 124 255 / 16%); }
 .inline-control { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .9rem; font-weight: 500; }
 .inline-control input { width: auto; accent-color: var(--accent); }
-.password-visibility-indicator { color: #aebbd5; font-size: .88rem; line-height: 1; pointer-events: none; position: absolute; right: 17px; top: 50%; transform: translateY(-50%); }
+.password-visibility-indicator { color: #aebbd5; display: grid; line-height: 1; place-items: center; pointer-events: none; position: absolute; right: 17px; top: 50%; transform: translateY(-50%); }
+.password-visibility-indicator svg { fill: none; height: 19px; stroke: currentcolor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; width: 19px; }
 .recovery-help { color: #a59aed; font-size: .875rem; line-height: 1.45; margin: 0; }
 .verification-toggle { background: transparent; border: 0; color: #ac9cf8; display: inline; font: inherit; padding: 0; text-align: left; }
 .verification-toggle:hover:not(:disabled) { background: transparent; color: #d7ceff; text-decoration: underline; }
 .login-security-note { align-items: center; color: #8793b1; display: flex; font-size: .8125rem; gap: 8px; justify-content: center; margin: 27px 0 0; text-align: center; }
 .login-security-note svg { color: #927bff; height: 18px; width: 18px; }
 button { border: 1px solid transparent; border-radius: var(--radius-control); background: var(--accent); color: var(--text); cursor: pointer; font-weight: 750; padding: 11px 14px; transition: background-color 160ms ease-out, border-color 160ms ease-out; }
-.login-card form > button[type="submit"] { background: linear-gradient(100deg, #a88aff, #8e75ed); border-color: rgb(209 196 255 / 32%); box-shadow: 0 8px 20px rgb(100 69 222 / 28%); font-size: 1rem; font-weight: 600; min-height: 51px; }
+.login-card form > button[type="submit"] { background: #9277ef; border-color: #a991f5; box-shadow: none; font-size: 1rem; font-weight: 600; min-height: 51px; }
+.login-card form > button[type="submit"]:hover:not(:disabled) { background: #a188f3; }
 button:hover:not(:disabled) { background: var(--accent-hover); }
 button:disabled { opacity: .65; cursor: wait; }
 .error { color: var(--danger); margin: 0; }

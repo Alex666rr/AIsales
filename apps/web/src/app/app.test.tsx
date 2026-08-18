@@ -49,6 +49,7 @@ describe("App", () => {
     expect(screen.getByText("Нет доступа к приложению?")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Использовать код восстановления" })).toBeInTheDocument();
     expect(screen.getAllByTestId("login-field-icon")).toHaveLength(3);
+    expect(screen.getByTestId("password-visibility-icon")).toHaveAttribute("aria-hidden", "true");
   });
 
   it("switches the second-factor field to a recovery code without a checkbox", async () => {

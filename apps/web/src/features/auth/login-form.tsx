@@ -20,6 +20,10 @@ function FieldIcon({ kind }: FieldIconProps) {
   return <svg viewBox="0 0 24 24"><path d="M12 3.5 19 6v5.4c0 4.1-2.8 7.7-7 9.1-4.2-1.4-7-5-7-9.1V6l7-2.5Z" /><path d="m8.8 12 2 2 4.4-4.4" /></svg>;
 }
 
+function PasswordVisibilityIcon() {
+  return <svg viewBox="0 0 24 24" focusable="false"><path d="M2.8 12s3.4-5 9.2-5 9.2 5 9.2 5-3.4 5-9.2 5-9.2-5-9.2-5Z" /><circle cx="12" cy="12" r="2.35" /></svg>;
+}
+
 export function LoginForm({ onAuthenticated }: LoginFormProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -57,8 +61,9 @@ export function LoginForm({ onAuthenticated }: LoginFormProps) {
         <header className="login-brand">
           <span className="login-monogram" data-testid="login-monogram" aria-hidden="true">
             <svg viewBox="0 0 72 72" focusable="false">
-              <path className="monogram-left" d="m14 56 19-39c1.2-2.5 4.7-2.5 5.9 0l19 39c1.6 3.2-2.6 6.1-5 3.5L36 31 19 59.5c-2.3 2.6-6.6-.3-5-3.5Z" />
-              <path className="monogram-cut" d="m21.3 57.4 12.8-9.5 10.4-8.8-6.2 13.2-15.1 8.1c-1.4.7-2.8-1.8-1.9-3Z" />
+              <circle className="monogram-ring" cx="36" cy="36" r="29" />
+              <path className="monogram-stroke" d="m21 49 15-27 15 27m-21.5-11h13" />
+              <circle className="monogram-point" cx="36" cy="42" r="2.6" />
             </svg>
           </span>
           <h1 id="login-title">AIsales</h1>
@@ -77,7 +82,7 @@ export function LoginForm({ onAuthenticated }: LoginFormProps) {
             <span className="login-input-shell">
               <span className="login-field-icon" data-testid="login-field-icon" aria-hidden="true"><FieldIcon kind="password" /></span>
               <input autoComplete="current-password" placeholder="Введите пароль" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-              <span className="password-visibility-indicator" aria-hidden="true">◉</span>
+              <span className="password-visibility-indicator" data-testid="password-visibility-icon" aria-hidden="true"><PasswordVisibilityIcon /></span>
             </span>
           </label>
           <label>
