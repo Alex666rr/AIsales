@@ -32,15 +32,26 @@ export function LoginForm({ onAuthenticated }: LoginFormProps) {
     }
   }
 
+  function toggleVerificationMethod() {
+    setIsRecoveryCode((current) => !current);
+    setVerification("");
+  }
+
   return (
     <main className="login-layout">
       <section className="login-card" aria-labelledby="login-title">
-        <p className="eyebrow">AIsales</p>
-        <h1 id="login-title">Вход в AIsales</h1>
-        <p className="muted">Рабочее пространство продаж. Доступ подтверждается серверной сессией.</p>
+        <header className="login-brand">
+          <span className="login-monogram" data-testid="login-monogram" aria-hidden="true">
+            <svg viewBox="0 0 40 40" focusable="false">
+              <path d="M20 6 33 32h-6.2l-2.5-5.2H15.7L13.2 32H7L20 6Zm0 12.5-2.1 4.3h4.2L20 18.5Z" />
+            </svg>
+          </span>
+          <h1 id="login-title">AIsales</h1>
+          <p className="login-subtitle">Рабочее пространство продаж</p>
+        </header>
         <form onSubmit={submit}>
           <label>
-            Рабочий email
+            Электронная почта
             <input autoComplete="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required />
           </label>
           <label>
@@ -48,16 +59,21 @@ export function LoginForm({ onAuthenticated }: LoginFormProps) {
             <input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
           </label>
           <label>
-            {isRecoveryCode ? "Recovery-код" : "Код приложения-аутентификатора"}
-            <input autoComplete="one-time-code" inputMode="numeric" value={verification} onChange={(event) => setVerification(event.target.value)} />
+            {isRecoveryCode ? "Код восстановления" : "Google Authenticator"}
+            <input
+              autoComplete={isRecoveryCode ? "off" : "one-time-code"}
+              inputMode={isRecoveryCode ? "text" : "numeric"}
+              value={verification}
+              onChange={(event) => setVerification(event.target.value)}
+            />
           </label>
-          <label className="inline-control">
-            <input type="checkbox" checked={isRecoveryCode} onChange={(event) => setIsRecoveryCode(event.target.checked)} />
-            Использовать recovery-код
-          </label>
+          <button className="verification-toggle" type="button" onClick={toggleVerificationMethod}>
+            {isRecoveryCode ? "Вернуться к Google Authenticator" : "Использовать код восстановления"}
+          </button>
           {error && <p role="alert" className="error">{error}</p>}
           <button type="submit" disabled={isSubmitting}>{isSubmitting ? "Проверяем…" : "Войти"}</button>
         </form>
+        <p className="login-security-note">Защищённый вход</p>
       </section>
     </main>
   );
