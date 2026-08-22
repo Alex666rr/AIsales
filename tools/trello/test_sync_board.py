@@ -98,7 +98,7 @@ def test_sync_preserves_human_notes_and_is_idempotent() -> None:
     assert repeated.created_lists == repeated.created_cards == repeated.updated_cards == repeated.archived_lists == 0
 
 
-def test_sync_marks_done_roadmap_cards_complete_and_keeps_open_work_unchecked() -> None:
+def test_sync_preserves_a_live_completion_mark_during_structural_refresh() -> None:
     fake = FakeTrelloTransport()
     synchronizer = build_synchronizer(fake)
 
@@ -109,11 +109,11 @@ def test_sync_marks_done_roadmap_cards_complete_and_keeps_open_work_unchecked() 
     assert fake.card("S1.03").due_complete is True
     assert fake.card("S1.04").due_complete is False
 
-    fake.card("S0.01").due_complete = False
+    fake.card("S1.04").due_complete = True
     result = synchronizer.sync()
 
-    assert result.updated_cards == 1
-    assert fake.card("S0.01").due_complete is True
+    assert result.updated_cards == 0
+    assert fake.card("S1.04").due_complete is True
 
 
 def test_sync_archives_only_known_previous_generated_lists() -> None:
