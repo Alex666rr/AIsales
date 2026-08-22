@@ -27,6 +27,7 @@ function PasswordVisibilityIcon() {
 export function LoginForm({ onAuthenticated }: LoginFormProps) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [isPasswordVisible, setIsPasswordVisible] = useState(false);
   const [verification, setVerification] = useState("");
   const [isRecoveryCode, setIsRecoveryCode] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,8 +82,16 @@ export function LoginForm({ onAuthenticated }: LoginFormProps) {
             Пароль
             <span className="login-input-shell">
               <span className="login-field-icon" data-testid="login-field-icon" aria-hidden="true"><FieldIcon kind="password" /></span>
-              <input autoComplete="current-password" placeholder="Введите пароль" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-              <span className="password-visibility-indicator" data-testid="password-visibility-icon" aria-hidden="true"><PasswordVisibilityIcon /></span>
+              <input autoComplete="current-password" placeholder="Введите пароль" type={isPasswordVisible ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} required />
+              <button
+                aria-label={isPasswordVisible ? "Скрыть пароль" : "Показать пароль"}
+                className="password-visibility-indicator"
+                data-testid="password-visibility-icon"
+                onClick={() => setIsPasswordVisible((current) => !current)}
+                type="button"
+              >
+                <PasswordVisibilityIcon />
+              </button>
             </span>
           </label>
           <label>
@@ -92,9 +101,10 @@ export function LoginForm({ onAuthenticated }: LoginFormProps) {
               <input
                 autoComplete={isRecoveryCode ? "off" : "one-time-code"}
                 inputMode={isRecoveryCode ? "text" : "numeric"}
+                maxLength={isRecoveryCode ? undefined : 6}
                 placeholder={isRecoveryCode ? "Код восстановления" : "000 000"}
                 value={verification}
-                onChange={(event) => setVerification(event.target.value)}
+                onChange={(event) => setVerification(isRecoveryCode ? event.target.value : event.target.value.replace(/\D/g, "").slice(0, 6))}
               />
             </span>
           </label>

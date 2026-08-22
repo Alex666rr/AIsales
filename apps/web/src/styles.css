@@ -55,7 +55,9 @@ select option { background: var(--surface-raised); }
 .login-card input:focus { border-color: #aa92ff; box-shadow: 0 0 0 3px rgb(155 124 255 / 16%); }
 .inline-control { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .9rem; font-weight: 500; }
 .inline-control input { width: auto; accent-color: var(--accent); }
-.password-visibility-indicator { color: #aebbd5; display: grid; line-height: 1; place-items: center; pointer-events: none; position: absolute; right: 17px; top: 50%; transform: translateY(-50%); }
+.password-visibility-indicator { align-items: center; background: transparent; border: 0; border-radius: 5px; color: #aebbd5; display: grid; height: 32px; justify-content: center; line-height: 1; padding: 0; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); width: 32px; }
+.password-visibility-indicator:hover:not(:disabled) { background: rgb(174 187 213 / 10%); color: #d9dfed; }
+.password-visibility-indicator:focus-visible { outline: 2px solid #aa92ff; outline-offset: 2px; }
 .password-visibility-indicator svg { fill: none; height: 19px; stroke: currentcolor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; width: 19px; }
 .recovery-help { color: #a59aed; font-size: .875rem; line-height: 1.45; margin: 0; }
 .verification-toggle { background: transparent; border: 0; color: #ac9cf8; display: inline; font: inherit; padding: 0; text-align: left; }
