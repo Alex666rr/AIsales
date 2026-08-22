@@ -35,6 +35,8 @@ describe("App", () => {
     expect(screen.getByTestId("application-shell")).toHaveAttribute("data-theme", "control-room");
     expect(screen.getByRole("heading", { name: "Telegram-аккаунты" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Доступ команды" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Открыть аккаунты" })).toBeInTheDocument();
+    expect(screen.queryByText(/Подключение аккаунтов станет доступно в следующем функциональном блоке/)).not.toBeInTheDocument();
   });
 
   it("opens the accounts workspace from the main navigation", async () => {

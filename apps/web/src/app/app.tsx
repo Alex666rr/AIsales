@@ -76,11 +76,12 @@ export function App() {
             <div className="section-heading">
               <div>
                 <h2 id="accounts-heading">Telegram-аккаунты</h2>
-                <p className="muted">Подключённые рабочие аккаунты и их состояние будут отображаться здесь.</p>
+                <p className="muted">Подключайте рабочие аккаунты и следите за их состоянием.</p>
               </div>
-              <span className="status-chip">Нет подключений</span>
+              <span className="status-chip">Центр аккаунтов</span>
             </div>
-            <p className="empty-state">Подключение аккаунтов станет доступно в следующем функциональном блоке. Сейчас платформа не создаёт и не имитирует подключения.</p>
+            <p className="empty-state">Подключение по номеру и QR, список рабочих аккаунтов и безопасные действия доступны в разделе «Аккаунты».</p>
+            <button className="secondary" onClick={() => navigate("accounts")} type="button">Открыть аккаунты</button>
           </section>
           <section className="context-card" id="team" aria-labelledby="team-heading">
             <div className="section-heading">
