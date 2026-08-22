@@ -81,6 +81,8 @@ from .modules.telegram_connections.routes import (
     build_workspace_account_directory_router,
     build_workspace_connection_router,
 )
+from .modules.proxies.routes import build_workspace_proxy_router
+from .modules.proxies.service import WorkspaceProxyService
 from .modules.telegram_connections.service import (
     ConnectionStatusService,
     ConnectionAttemptService,
@@ -95,7 +97,7 @@ from .modules.telegram_connections.tdata_handoff import TdataHandoffService
 from .modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
-REQUIRED_SCHEMA_REVISIONS = frozenset({"0012_staff_lifecycle"})
+REQUIRED_SCHEMA_REVISIONS = frozenset({"0013_telegram_proxy_workspace"})
 
 
 class TelegramPolicyContextIssuer:
@@ -226,6 +228,7 @@ class ApplicationComposition:
     workspace_connection_router: object
     workspace_account_directory_router: object
     workspace_account_controls_router: object
+    workspace_proxy_router: object
     tdata_router: object
     sync_engine: Engine | None = None
     async_engine: AsyncEngine | None = None
@@ -398,6 +401,10 @@ def build_application_composition(
         ),
         principal_dependency=CompanyOwnerSessionAuthenticator(session_authenticator),
     )
+    workspace_proxy_router = build_workspace_proxy_router(
+        WorkspaceProxyService(proxy_repository),
+        principal_dependency=CompanyOwnerSessionAuthenticator(session_authenticator),
+    )
     tdata_router = build_tdata_ticket_router(
         tdata_tickets,
         principal_dependency=authenticator,
@@ -432,6 +439,7 @@ def build_application_composition(
         workspace_connection_router=workspace_connection_router,
         workspace_account_directory_router=workspace_account_directory_router,
         workspace_account_controls_router=workspace_account_controls_router,
+        workspace_proxy_router=workspace_proxy_router,
         tdata_router=tdata_router,
         sync_engine=sync_engine,
         async_engine=async_engine,

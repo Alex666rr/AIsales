@@ -8,6 +8,7 @@ import { TelegramConnectionPanel } from "../features/telegram/telegram-connectio
 import { TelegramAccountsList } from "../features/telegram/telegram-accounts-list";
 import { OrganizationProfileCard } from "../features/organizations/organization-profile";
 import { StaffMembersList } from "../features/staff/staff-members-list";
+import { ProxiesPage } from "../features/proxies/proxies-page";
 
 type AuthenticationState =
   | { kind: "loading" }
@@ -15,10 +16,10 @@ type AuthenticationState =
   | { kind: "authenticated"; session: SessionContext }
   | { kind: "unavailable" };
 
-type WorkspaceView = "overview" | "accounts" | "team";
+type WorkspaceView = "overview" | "accounts" | "proxies" | "team";
 
 function viewFromPath(path: string): WorkspaceView {
-  return path === "/accounts" ? "accounts" : path === "/team" ? "team" : "overview";
+  return path === "/accounts" ? "accounts" : path === "/proxies" ? "proxies" : path === "/team" ? "team" : "overview";
 }
 
 function pathFromView(view: WorkspaceView): string { return view === "overview" ? "/" : `/${view}`; }
@@ -64,6 +65,7 @@ export function App() {
         <nav aria-label="Основная навигация">
           <button aria-current={view === "overview" ? "page" : undefined} onClick={() => navigate("overview")} type="button">Обзор</button>
           <button aria-current={view === "accounts" ? "page" : undefined} onClick={() => navigate("accounts")} type="button">Аккаунты</button>
+          {state.session.roles.includes("company_owner") && <button aria-current={view === "proxies" ? "page" : undefined} onClick={() => navigate("proxies")} type="button">Прокси</button>}
           <button aria-current={view === "team" ? "page" : undefined} onClick={() => navigate("team")} type="button">Команда</button>
         </nav>
       </aside>
@@ -108,6 +110,16 @@ export function App() {
           {state.session.roles.includes("company_owner")
             ? <TelegramConnectionPanel />
             : <p className="empty-state">Подключения Telegram доступны владельцу организации.</p>}
+        </section>}
+        {view === "proxies" && state.session.roles.includes("company_owner") && <section className="context-card workspace-page" aria-labelledby="proxies-page-heading">
+          <div className="section-heading">
+            <div>
+              <h1 id="proxies-page-heading">Прокси</h1>
+              <p className="muted">Операционные параметры подключений без отображения логинов и паролей.</p>
+            </div>
+            <span className="status-chip">Контур подключений</span>
+          </div>
+          <ProxiesPage />
         </section>}
         {view === "team" && <section className="context-card workspace-page" aria-labelledby="team-page-heading">
           <div className="section-heading">

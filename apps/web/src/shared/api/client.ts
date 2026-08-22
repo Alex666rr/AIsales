@@ -30,6 +30,16 @@ export type TelegramAccountStatus = {
   error_code: string | null;
 };
 
+export type TelegramProxyStatus = {
+  proxy_id: string;
+  endpoint: string;
+  protocol: "socks5" | "http" | "https";
+  capacity: number;
+  is_default: boolean;
+  assignment_count: number;
+  health: "awaiting_check" | "healthy" | "degraded";
+};
+
 export type OrganizationProfile = { organization_id: string; name: string };
 export type WorkspaceMember = { user_id: string; email: string; role: "administrator" | "manager"; is_active: boolean };
 
@@ -174,6 +184,25 @@ export async function listTelegramAccounts(): Promise<TelegramAccountStatus[]> {
   const response = await request("/workspace/telegram/accounts");
   if (!response.ok) throw new ApiError(response.status);
   return response.json() as Promise<TelegramAccountStatus[]>;
+}
+
+export async function listTelegramProxies(): Promise<TelegramProxyStatus[]> {
+  const response = await request("/workspace/telegram/proxies");
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramProxyStatus[]>;
+}
+
+export async function createTelegramProxy(input: {
+  url: string;
+  capacity: number;
+  default: boolean;
+}): Promise<TelegramProxyStatus> {
+  const response = await request("/workspace/telegram/proxies", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramProxyStatus>;
 }
 
 export type TelegramAccountAction = "pause" | "resume" | "archive";

@@ -104,11 +104,19 @@ nav button[aria-current] { background: var(--accent); color: var(--text); font-w
 .qr-connect .muted { margin: 0; max-width: 50ch; }
 .connection-success { background: #173d33; border: 1px solid #34725e; border-radius: var(--radius-control); color: #c8ffe6; margin: 0; padding: 14px; }
 .telegram-account-list { border-top: 1px solid var(--border); display: grid; gap: 10px; margin-top: 24px; padding-top: 20px; }
+.proxy-list { border-top: 1px solid var(--border); display: grid; gap: 10px; margin-top: 24px; padding-top: 20px; }
+.proxy-form { border-top: 1px solid var(--border); margin-top: 24px; max-width: 560px; padding-top: 20px; }
+.proxy-form .muted { margin: 0; }
 .telegram-account-row { align-items: center; background: #16253c; border: 1px solid #304868; border-radius: var(--radius-control); display: flex; gap: 18px; justify-content: space-between; padding: 16px; }
+.proxy-row { align-items: center; background: #16253c; border: 1px solid #304868; border-radius: var(--radius-control); display: flex; gap: 14px; justify-content: space-between; padding: 16px; }
 .telegram-account-row h2 { font-size: 1rem; margin: 0; }
+.proxy-row h2 { font-size: 1rem; margin: 0; overflow-wrap: anywhere; }
 .telegram-account-row .muted { font-size: .875rem; margin: 6px 0 0; }
+.proxy-row .muted { font-size: .875rem; margin: 6px 0 0; }
 .connection-state { border: 1px solid #5a4fb0; border-radius: 999px; color: #dedbff; font-size: .8125rem; font-weight: 750; padding: 7px 10px; white-space: nowrap; }
 .connection-state-active { border-color: #34725e; color: #c8ffe6; }
+.proxy-health-healthy { border-color: #34725e; color: #c8ffe6; }
+.proxy-health-degraded { border-color: #8d5268; color: #ffd8e3; }
 .connection-state-paused, .connection-state-archived { border-color: #65748b; color: #cad3df; }
 .organization-profile { display: grid; gap: 8px; }
 .organization-profile h2 { margin: 0; }
@@ -119,7 +127,9 @@ nav button[aria-current] { background: var(--accent); color: var(--text); font-w
 .staff-members article { align-items: center; background: #16253c; border: 1px solid #304868; border-radius: var(--radius-control); display: flex; gap: 16px; justify-content: space-between; padding: 14px; }
 .staff-members p { margin: 5px 0 0; }
 .telegram-account-row { flex-wrap: wrap; }
+.proxy-row { flex-wrap: wrap; }
 .telegram-account-row > div:first-child { flex: 1 1 15rem; }
+.proxy-row > div:first-child { flex: 1 1 15rem; }
 .account-archive-action { background: #3a2432; border: 1px solid #8d5268; color: #ffd8e3; }
 .account-archive-action:hover:not(:disabled) { background: #512c3e; }
 .account-archive-confirmation { background: #18263c; border: 1px solid #5d4662; border-radius: var(--radius-control); box-shadow: 0 16px 48px rgb(0 0 0 / 35%); margin-top: 4px; padding: 18px; }

@@ -65,6 +65,62 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Доступ команды" })).not.toBeInTheDocument();
   });
 
+  it("opens the owner proxy workspace without displaying proxy credentials", async () => {
+    window.history.replaceState({}, "", "/proxies");
+    const fetchMock = vi.fn((url: string) => {
+      if (url === "/auth/session") return Promise.resolve(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["company_owner"],
+      }), { status: 200 }));
+      if (url === "/workspace/telegram/proxies") return Promise.resolve(new Response(JSON.stringify([{
+        proxy_id: "90000000-0000-0000-0000-000000000001",
+        endpoint: "socks5://edge.example:1080", protocol: "socks5", capacity: 2,
+        is_default: true, assignment_count: 1, health: "awaiting_check",
+      }]), { status: 200 }));
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Прокси" })).toBeInTheDocument();
+    expect(await screen.findByText("socks5://edge.example:1080")).toBeInTheDocument();
+    expect(screen.getByText("Ожидает проверки")).toBeInTheDocument();
+    expect(screen.queryByText(/password/i)).not.toBeInTheDocument();
+  });
+
+  it("adds a proxy through the owner workspace without rendering its credentials", async () => {
+    window.history.replaceState({}, "", "/proxies");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["company_owner"],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        proxy_id: "90000000-0000-0000-0000-000000000002",
+        endpoint: "https://edge.example:443", protocol: "https", capacity: 1,
+        is_default: true, assignment_count: 0, health: "awaiting_check",
+      }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Прокси" });
+    fireEvent.change(screen.getByLabelText("Адрес прокси"), {
+      target: { value: "https://user:secret-password@edge.example:443" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Добавить прокси" }));
+
+    expect(await screen.findByText("https://edge.example:443")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/workspace/telegram/proxies",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(screen.queryByText(/secret-password/)).not.toBeInTheDocument();
+  });
+
   it("opens the team URL directly with the organization name and staff controls for the owner", async () => {
     window.history.replaceState({}, "", "/team");
     const fetchMock = vi.fn((url: string) => {

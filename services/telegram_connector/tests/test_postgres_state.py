@@ -165,6 +165,95 @@ def test_proxy_capacity_override_and_credentials_are_atomic_and_restart_durable(
     asyncio.run(scenario())
 
 
+def test_default_proxy_assignment_is_scoped_to_the_account_organization(tmp_path):
+    """One tenant's default proxy must never be selected for another tenant."""
+
+    async def scenario():
+        engine, sessions = durable_sessions(tmp_path)
+        try:
+            organization_one = UUID(int=201)
+            organization_two = UUID(int=202)
+            account_one = UUID(int=101)
+            account_two = UUID(int=102)
+            proxy_one = UUID(int=401)
+            proxy_two = UUID(int=402)
+            accounts = repository_type("SqlAlchemyTelegramAccountRepository")(sessions)
+            accounts.put(account_one, organization_one)
+            accounts.put(account_two, organization_two)
+            cipher = repository_type("ProxyCredentialCipher")(
+                {7: b"p" * 32}, active_key_version=7
+            )
+            repository = repository_type("SqlAlchemyProxyAssignmentRepository")(
+                sessions, credential_cipher=cipher
+            )
+            await repository.put_proxy(
+                ProxyConfig(proxy_id=proxy_one, url="socks5://one.example:1080"),
+                default=True,
+                organization_id=organization_one,
+            )
+            await repository.put_proxy(
+                ProxyConfig(proxy_id=proxy_two, url="socks5://two.example:1080"),
+                default=True,
+                organization_id=organization_two,
+            )
+
+            first = await repository.reserve_assignment(account_one)
+            second = await repository.reserve_assignment(account_two)
+
+            assert first is not None and first.proxy.proxy_id == proxy_one
+            assert second is not None and second.proxy.proxy_id == proxy_two
+        finally:
+            engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_workspace_proxy_list_never_returns_encrypted_credentials(tmp_path):
+    """The workspace query is tenant-scoped and includes only operational fields."""
+
+    async def scenario():
+        engine, sessions = durable_sessions(tmp_path)
+        try:
+            organization_one = UUID(int=201)
+            organization_two = UUID(int=202)
+            cipher = repository_type("ProxyCredentialCipher")(
+                {7: b"p" * 32}, active_key_version=7
+            )
+            repository = repository_type("SqlAlchemyProxyAssignmentRepository")(
+                sessions, credential_cipher=cipher
+            )
+            await repository.put_proxy(
+                ProxyConfig(
+                    proxy_id=UUID(int=401),
+                    url="https://proxy-user:proxy-password@one.example:443",
+                ),
+                default=True,
+                organization_id=organization_one,
+            )
+            await repository.put_proxy(
+                ProxyConfig(proxy_id=UUID(int=402), url="socks5://two.example:1080"),
+                organization_id=organization_two,
+            )
+
+            records = await repository.list_for_organization(organization_one)
+
+            assert records == (
+                {
+                    "proxy_id": UUID(int=401),
+                    "endpoint": "https://one.example:443",
+                    "capacity": 1,
+                    "is_default": True,
+                    "assignment_count": 0,
+                    "health": "awaiting_check",
+                },
+            )
+            assert "proxy-password" not in repr(records)
+        finally:
+            engine.dispose()
+
+    asyncio.run(scenario())
+
+
 def test_authoritative_account_organization_lookup_survives_restart(tmp_path):
     """Policy context issuance must use persisted ownership rather than caller-supplied organization IDs."""
     engine, sessions = durable_sessions(tmp_path)

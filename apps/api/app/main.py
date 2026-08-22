@@ -59,6 +59,7 @@ def create_app(*, composition=None, web_directory: Path | None = None) -> FastAP
         api.include_router(composition.workspace_connection_router)
         api.include_router(composition.workspace_account_directory_router)
         api.include_router(composition.workspace_account_controls_router)
+        api.include_router(composition.workspace_proxy_router)
         api.include_router(composition.tdata_router)
         api.state.composition = composition
 
@@ -82,6 +83,7 @@ def create_app(*, composition=None, web_directory: Path | None = None) -> FastAP
             )
 
         @api.get("/accounts", include_in_schema=False)
+        @api.get("/proxies", include_in_schema=False)
         @api.get("/team", include_in_schema=False)
         async def web_workspace_shell() -> FileResponse:
             return FileResponse(index)
