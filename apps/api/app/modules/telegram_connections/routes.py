@@ -187,6 +187,10 @@ class WorkspaceConnectionStatusRoutes(Protocol):
     ) -> ConnectionStatusView: ...
 
 
+class WorkspaceAccountDirectoryRoutes(Protocol):
+    async def list(self, principal: TenantContext) -> tuple[ConnectionStatusView, ...]: ...
+
+
 def build_workspace_connection_router(
     attempts: WorkspacePhoneAttemptRoutes,
     *,
@@ -251,6 +255,31 @@ def build_workspace_connection_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="telegram connection not found",
             ) from None
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="telegram connection unavailable",
+            ) from None
+
+    return router
+
+
+def build_workspace_account_directory_router(
+    directory: WorkspaceAccountDirectoryRoutes,
+    *,
+    principal_dependency: WorkspacePrincipalDependency,
+) -> APIRouter:
+    """List redacted connection states using the browser session's tenant context."""
+    router = APIRouter(
+        prefix="/workspace/telegram/accounts", tags=["workspace-telegram-connections"]
+    )
+
+    @router.get("", response_model=tuple[ConnectionStatusView, ...])
+    async def list_accounts(
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> tuple[ConnectionStatusView, ...]:
+        try:
+            return await directory.list(principal)
         except Exception:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

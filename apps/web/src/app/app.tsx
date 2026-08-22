@@ -5,6 +5,7 @@ import { LoginForm } from "../features/auth/login-form";
 import { StaffInvitationForm } from "../features/staff/staff-invitation-form";
 import { SetupWizard } from "../features/auth/setup-wizard";
 import { TelegramConnectionPanel } from "../features/telegram/telegram-connection-panel";
+import { TelegramAccountsList } from "../features/telegram/telegram-accounts-list";
 
 type AuthenticationState =
   | { kind: "loading" }
@@ -81,10 +82,11 @@ export function App() {
           <div className="section-heading">
             <div>
               <h1 id="accounts-page-heading">Telegram-аккаунты</h1>
-              <p className="muted">Здесь будут отображаться подключённые рабочие аккаунты и их состояние.</p>
+              <p className="muted">Подключённые рабочие аккаунты и их состояние.</p>
             </div>
-            <span className="status-chip">Нет подключений</span>
+            <span className="status-chip">Статусы аккаунтов</span>
           </div>
+          <TelegramAccountsList />
           {state.session.roles.includes("company_owner")
             ? <TelegramConnectionPanel />
             : <p className="empty-state">Подключения Telegram доступны владельцу организации.</p>}
