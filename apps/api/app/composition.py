@@ -75,6 +75,7 @@ from .modules.policy.service import (
 from .modules.telegram_connections.routes import (
     build_connection_router,
     build_tdata_ticket_router,
+    build_workspace_account_controls_router,
     build_workspace_account_directory_router,
     build_workspace_connection_router,
 )
@@ -84,6 +85,7 @@ from .modules.telegram_connections.service import (
     PhoneAttemptAdapter,
     QrAttemptAdapter,
     WorkspaceConnectionAttemptService,
+    WorkspaceAccountControlService,
     WorkspaceAccountDirectoryService,
     WorkspaceConnectionStatusService,
 )
@@ -220,6 +222,7 @@ class ApplicationComposition:
     connection_router: object
     workspace_connection_router: object
     workspace_account_directory_router: object
+    workspace_account_controls_router: object
     tdata_router: object
     sync_engine: Engine | None = None
     async_engine: AsyncEngine | None = None
@@ -378,6 +381,13 @@ def build_application_composition(
         ),
         principal_dependency=session_authenticator,
     )
+    workspace_account_controls_router = build_workspace_account_controls_router(
+        WorkspaceAccountControlService(
+            accounts=account_repository,
+            connections=connection_repository,
+        ),
+        principal_dependency=CompanyOwnerSessionAuthenticator(session_authenticator),
+    )
     tdata_router = build_tdata_ticket_router(
         tdata_tickets,
         principal_dependency=authenticator,
@@ -410,6 +420,7 @@ def build_application_composition(
         connection_router=connection_router,
         workspace_connection_router=workspace_connection_router,
         workspace_account_directory_router=workspace_account_directory_router,
+        workspace_account_controls_router=workspace_account_controls_router,
         tdata_router=tdata_router,
         sync_engine=sync_engine,
         async_engine=async_engine,

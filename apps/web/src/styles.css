@@ -110,6 +110,13 @@ nav button[aria-current] { background: var(--accent); color: var(--text); font-w
 .connection-state { border: 1px solid #5a4fb0; border-radius: 999px; color: #dedbff; font-size: .8125rem; font-weight: 750; padding: 7px 10px; white-space: nowrap; }
 .connection-state-active { border-color: #34725e; color: #c8ffe6; }
 .connection-state-paused, .connection-state-archived { border-color: #65748b; color: #cad3df; }
+.telegram-account-row { flex-wrap: wrap; }
+.telegram-account-row > div:first-child { flex: 1 1 15rem; }
+.account-archive-action { background: #3a2432; border: 1px solid #8d5268; color: #ffd8e3; }
+.account-archive-action:hover:not(:disabled) { background: #512c3e; }
+.account-archive-confirmation { background: #18263c; border: 1px solid #5d4662; border-radius: var(--radius-control); box-shadow: 0 16px 48px rgb(0 0 0 / 35%); margin-top: 4px; padding: 18px; }
+.account-archive-confirmation h2 { font-size: 1rem; margin: 0; }
+.account-archive-confirmation p { color: var(--muted); margin: 8px 0 14px; max-width: 55ch; }
 dl { display: grid; gap: 12px; grid-template-columns: 10rem 1fr; margin-bottom: 0; }
 dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; }

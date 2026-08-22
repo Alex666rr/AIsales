@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID
 
@@ -47,6 +49,12 @@ class OrganizationAccountLookup(Protocol):
 
 class ConnectionLookup(Protocol):
     async def get(self, account_id: UUID): ...
+
+
+class ConnectionLifecycleRepository(ConnectionLookup, Protocol):
+    async def save(self, record) -> None: ...
+
+    async def force_terminal(self, account_id: UUID, state: str, now: datetime): ...
 
 
 _PHONE_STATES = {
@@ -282,6 +290,74 @@ class WorkspaceAccountDirectoryService:
                 )
             )
         return tuple(views)
+
+
+class WorkspaceAccountControlService:
+    """Owner-only lifecycle changes scoped to the account's organization."""
+
+    def __init__(
+        self,
+        *,
+        accounts: AccountOwnershipLookup,
+        connections: ConnectionLifecycleRepository,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self._accounts = accounts
+        self._connections = connections
+        self._now = now
+
+    async def pause(self, principal: TenantContext, account_id: UUID) -> ConnectionStatusView:
+        return await self._terminal(principal, account_id, "paused")
+
+    async def archive(self, principal: TenantContext, account_id: UUID) -> ConnectionStatusView:
+        return await self._terminal(principal, account_id, "archived")
+
+    async def resume(self, principal: TenantContext, account_id: UUID) -> ConnectionStatusView:
+        await self._require_owner_account(principal, account_id)
+        record = await self._connections.get(account_id)
+        if record is None:
+            raise KeyError("connection was not found")
+        if record.health.state != "paused":
+            raise ValueError("only paused accounts can resume")
+        resumed = record.model_copy(
+            update={
+                "health": record.health.model_copy(
+                    update={"state": "quarantine", "last_seen_at": self._timestamp(), "error_code": None}
+                )
+            }
+        )
+        await self._connections.save(resumed)
+        return _connection_status(resumed)
+
+    async def _terminal(
+        self, principal: TenantContext, account_id: UUID, state: str
+    ) -> ConnectionStatusView:
+        await self._require_owner_account(principal, account_id)
+        return _connection_status(
+            await self._connections.force_terminal(account_id, state, self._timestamp())
+        )
+
+    async def _require_owner_account(self, principal: TenantContext, account_id: UUID) -> None:
+        if "company_owner" not in principal.roles:
+            raise PermissionError("company owner required")
+        organization_id = await self._accounts.organization_for_async(account_id)
+        if organization_id != principal.organization_id:
+            raise KeyError("connection was not found")
+
+    def _timestamp(self) -> datetime:
+        timestamp = self._now()
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            raise ValueError("connection clock must be timezone-aware")
+        return timestamp.astimezone(UTC)
+
+
+def _connection_status(record) -> ConnectionStatusView:
+    return ConnectionStatusView(
+        account_id=record.account_id,
+        state=record.health.state,
+        last_seen_at=record.health.last_seen_at,
+        error_code=record.health.error_code,
+    )
 
 
 def _view(step: AuthStep, method: ConnectionMethod, states: dict[str, AttemptStatus]) -> AttemptView:
