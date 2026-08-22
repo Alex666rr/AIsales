@@ -75,11 +75,12 @@ def test_sync_builds_readable_stage_roadmap_without_hidden_markup() -> None:
         "📍 Сейчас", "✅ Stage 0 — Telegram prototype", "🚧 Stage 1 — Sales infrastructure",
         "🗂 Stage 2 — AI manager", "🗂 Stage 3 — Quality and optimization", "📦 Архив",
     }
-    next_card = fake.card("S1.03")
-    assert "Веб-приложение и администрирование" in next_card.name
-    assert "Статус: Следующее" in next_card.description
-    assert "docs/superpowers/plans/2026-08-07-ai-sales-manager-stage-1-sales-infrastructure.md" in next_card.description
-    assert "<!--" not in next_card.description
+    completed_card = fake.card("S1.03")
+    assert "Веб-приложение и администрирование" in completed_card.name
+    assert "Статус: Готово" in completed_card.description
+    assert "docs/superpowers/plans/2026-08-07-ai-sales-manager-stage-1-sales-infrastructure.md" in completed_card.description
+    assert "<!--" not in completed_card.description
+    assert "Telegram-аккаунты, боты и прокси" in fake.card("NOW.01").name
 
 
 def test_sync_preserves_human_notes_and_is_idempotent() -> None:
@@ -105,7 +106,8 @@ def test_sync_marks_done_roadmap_cards_complete_and_keeps_open_work_unchecked() 
 
     assert fake.card("S0.01").due_complete is True
     assert fake.card("S1.02").due_complete is True
-    assert fake.card("S1.03").due_complete is False
+    assert fake.card("S1.03").due_complete is True
+    assert fake.card("S1.04").due_complete is False
 
     fake.card("S0.01").due_complete = False
     result = synchronizer.sync()
