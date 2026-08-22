@@ -11,6 +11,18 @@ export type StaffInvitation = {
   setup_token: string;
 };
 
+export type TelegramConnectionAttempt = {
+  attempt_id: string;
+  method: "phone" | "qr";
+  status: "pending" | "code_requested" | "password_required" | "authorized" | "expired" | "failed";
+  expires_at: string;
+  account_id?: string | null;
+};
+
+export type TelegramQrStart = TelegramConnectionAttempt & {
+  qr_url: string;
+};
+
 export class ApiError extends Error {
   constructor(public readonly status: number) {
     super("The server did not accept the request.");
@@ -77,4 +89,49 @@ export async function confirmTotp(enrollmentToken: string, code: string): Promis
   if (!response.ok) throw new ApiError(response.status);
   const body = await response.json() as { recovery_codes: string[] };
   return body.recovery_codes;
+}
+
+export async function startTelegramPhone(phone: string): Promise<TelegramConnectionAttempt> {
+  const response = await request("/workspace/telegram/connections/phone/start", {
+    method: "POST",
+    body: JSON.stringify({ phone }),
+  });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramConnectionAttempt>;
+}
+
+export async function confirmTelegramPhoneCode(
+  attemptId: string,
+  code: string,
+): Promise<TelegramConnectionAttempt> {
+  const response = await request(`/workspace/telegram/connections/${attemptId}/phone/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ code }),
+  });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramConnectionAttempt>;
+}
+
+export async function confirmTelegramPassword(
+  attemptId: string,
+  password: string,
+): Promise<TelegramConnectionAttempt> {
+  const response = await request(`/workspace/telegram/connections/${attemptId}/phone/password`, {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramConnectionAttempt>;
+}
+
+export async function startTelegramQr(): Promise<TelegramQrStart> {
+  const response = await request("/workspace/telegram/connections/qr/start", { method: "POST" });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramQrStart>;
+}
+
+export async function getTelegramQrStatus(attemptId: string): Promise<TelegramConnectionAttempt> {
+  const response = await request(`/workspace/telegram/connections/${attemptId}/qr/status`);
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramConnectionAttempt>;
 }

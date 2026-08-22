@@ -39,3 +39,19 @@ class SessionAuthenticator:
         if session_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="authentication required")
         return self.from_session_id(session_id)
+
+
+class CompanyOwnerSessionAuthenticator:
+    """Restrict workspace administration actions to the organization owner."""
+
+    def __init__(self, session_authenticator: SessionAuthenticator) -> None:
+        self._session_authenticator = session_authenticator
+
+    async def __call__(
+        self,
+        session_id: Annotated[str | None, Cookie(alias="aisales_session")] = None,
+    ) -> TenantContext:
+        principal = await self._session_authenticator(session_id)
+        if "company_owner" not in principal.roles:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="company owner required")
+        return principal

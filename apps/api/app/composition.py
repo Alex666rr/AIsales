@@ -44,7 +44,7 @@ from telegram_connector.session_store import EncryptedSessionStore
 from .config import ApiSettings
 from .modules.auth.persistence import SqlAlchemyAuthRepository
 from .modules.auth.routes import build_auth_router, build_setup_router
-from .modules.auth.session_auth import SessionAuthenticator
+from .modules.auth.session_auth import CompanyOwnerSessionAuthenticator, SessionAuthenticator
 from .modules.auth.service import AuthService
 from .modules.organizations.provisioning import ProvisioningService, StaffInvitationService
 from .modules.organizations.routes import (
@@ -72,12 +72,18 @@ from .modules.policy.service import (
     PolicyGate,
     PolicyProtectedMessageLoader,
 )
-from .modules.telegram_connections.routes import build_connection_router, build_tdata_ticket_router
+from .modules.telegram_connections.routes import (
+    build_connection_router,
+    build_tdata_ticket_router,
+    build_workspace_connection_router,
+)
 from .modules.telegram_connections.service import (
     ConnectionStatusService,
     ConnectionAttemptService,
     PhoneAttemptAdapter,
     QrAttemptAdapter,
+    WorkspaceConnectionAttemptService,
+    WorkspaceConnectionStatusService,
 )
 from .modules.telegram_connections.tdata_handoff import TdataHandoffService
 from .modules.telegram_connections.tdata_ticket import TdataTicketRegistry
@@ -210,6 +216,7 @@ class ApplicationComposition:
     setup_router: object
     policy_router: object
     connection_router: object
+    workspace_connection_router: object
     tdata_router: object
     sync_engine: Engine | None = None
     async_engine: AsyncEngine | None = None
@@ -349,6 +356,18 @@ def build_application_composition(
             connections=connection_repository,
         ),
     )
+    workspace_connection_router = build_workspace_connection_router(
+        WorkspaceConnectionAttemptService(
+            phone=cast(PhoneAttemptAdapter, adapter_registry.get("phone")),
+            qr=cast(QrAttemptAdapter, adapter_registry.get("qr")),
+            finalizer=tdata_handoffs,
+        ),
+        principal_dependency=CompanyOwnerSessionAuthenticator(session_authenticator),
+        statuses=WorkspaceConnectionStatusService(
+            accounts=account_repository,
+            connections=connection_repository,
+        ),
+    )
     tdata_router = build_tdata_ticket_router(
         tdata_tickets,
         principal_dependency=authenticator,
@@ -379,6 +398,7 @@ def build_application_composition(
         setup_router=setup_router,
         policy_router=policy_router,
         connection_router=connection_router,
+        workspace_connection_router=workspace_connection_router,
         tdata_router=tdata_router,
         sync_engine=sync_engine,
         async_engine=async_engine,

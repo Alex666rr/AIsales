@@ -8,6 +8,7 @@ from uuid import UUID
 from telegram_connector.adapters.phone import AuthStep
 
 from app.modules.policy.models import PlatformOwnerPrincipal
+from app.modules.shared.commands import TenantContext
 
 from .models import AttemptStatus, AttemptView, ConnectionMethod, ConnectionStatusView, QrStartView
 
@@ -124,6 +125,115 @@ class ConnectionStatusService:
     ) -> ConnectionStatusView:
         organization_id = await self._accounts.organization_for_async(account_id)
         if organization_id != owner.principal_id:
+            raise KeyError("connection was not found")
+        record = await self._connections.get(account_id)
+        if record is None:
+            raise KeyError("connection was not found")
+        return ConnectionStatusView(
+            account_id=account_id,
+            state=record.health.state,
+            last_seen_at=record.health.last_seen_at,
+            error_code=record.health.error_code,
+        )
+
+
+class WorkspaceConnectionAttemptService:
+    """Run browser-originated attempts using session-derived tenant context only."""
+
+    def __init__(
+        self,
+        *,
+        phone: PhoneAttemptAdapter,
+        qr: QrAttemptAdapter,
+        finalizer: AuthorizedSessionFinalizer | None = None,
+    ) -> None:
+        self._phone = phone
+        self._qr = qr
+        self._finalizer = finalizer
+
+    async def start_phone(self, principal: TenantContext, phone: str) -> AttemptView:
+        return _view(
+            await self._phone.start(phone, principal.actor_id),
+            ConnectionMethod.PHONE,
+            _PHONE_STATES,
+        )
+
+    async def submit_code(
+        self, principal: TenantContext, attempt_id: UUID, code: str
+    ) -> AttemptView:
+        step = await self._phone.submit_code(attempt_id, principal.actor_id, code)
+        return await self._finalize_phone_if_authorized(principal, step)
+
+    async def submit_password(
+        self, principal: TenantContext, attempt_id: UUID, password: str
+    ) -> AttemptView:
+        step = await self._phone.submit_password(attempt_id, principal.actor_id, password)
+        return await self._finalize_phone_if_authorized(principal, step)
+
+    async def start_qr(self, principal: TenantContext) -> QrStartView:
+        step, qr_url = await self._qr.start_background(principal.actor_id)
+        view = _view(step, ConnectionMethod.QR, _QR_STATES)
+        return QrStartView(**view.model_dump(), qr_url=qr_url)
+
+    async def qr_status(self, principal: TenantContext, attempt_id: UUID) -> AttemptView:
+        step = await self._qr.status(attempt_id, principal.actor_id)
+        if step.state != "authorized":
+            return _view(step, ConnectionMethod.QR, _QR_STATES)
+        return await self._finalize(
+            principal,
+            step,
+            ConnectionMethod.QR,
+            self._qr.consume_authorized_session,
+        )
+
+    async def _finalize_phone_if_authorized(
+        self, principal: TenantContext, step: AuthStep
+    ) -> AttemptView:
+        if step.state != "authorized":
+            return _view(step, ConnectionMethod.PHONE, _PHONE_STATES)
+        return await self._finalize(
+            principal,
+            step,
+            ConnectionMethod.PHONE,
+            self._phone.consume_authorized_session,
+        )
+
+    async def _finalize(
+        self,
+        principal: TenantContext,
+        step: AuthStep,
+        method: ConnectionMethod,
+        consume,
+    ) -> AttemptView:
+        states = _PHONE_STATES if method is ConnectionMethod.PHONE else _QR_STATES
+        if self._finalizer is None:
+            return _view(step.model_copy(update={"state": "failed"}), method, states)
+        try:
+            telegram_user_id, session_payload = await consume(
+                step.challenge_id, principal.actor_id
+            )
+            result = await self._finalizer.finalize(
+                organization_id=principal.organization_id,
+                telegram_user_id=telegram_user_id,
+                session_payload=session_payload,
+            )
+            return _view(step, method, states).model_copy(
+                update={"account_id": result.account_id}
+            )
+        except Exception:
+            return _view(step.model_copy(update={"state": "failed"}), method, states)
+
+
+class WorkspaceConnectionStatusService:
+    """Read connection status only inside the signed-in organization."""
+
+    def __init__(self, *, accounts: AccountOwnershipLookup, connections: ConnectionLookup) -> None:
+        self._accounts = accounts
+        self._connections = connections
+
+    async def get(self, principal: TenantContext, account_id: UUID) -> ConnectionStatusView:
+        organization_id = await self._accounts.organization_for_async(account_id)
+        if organization_id != principal.organization_id:
             raise KeyError("connection was not found")
         record = await self._connections.get(account_id)
         if record is None:
