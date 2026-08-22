@@ -277,7 +277,7 @@ def test_health_check_requires_database_at_current_migration_revision(tmp_path):
             connection.execute(
                 text(
                         "UPDATE alembic_version SET version_num = "
-                        "'0012_staff_lifecycle'"
+                            "'0013_telegram_proxy_workspace'"
                 )
             )
         current_status, current_body = asyncio.run(asgi_get(application, "/healthz"))

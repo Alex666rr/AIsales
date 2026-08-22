@@ -195,13 +195,10 @@ class TrelloBoardSynchronizer:
                 created += 1
                 continue
             updated_description = _with_preserved_notes(str(found.get("desc", "")), card)
-            is_complete = bool(found.get("dueComplete", False))
-            if updated_description != found.get("desc", "") or is_complete != card.is_complete:
+            if updated_description != found.get("desc", ""):
                 changes: dict[str, str] = {}
                 if updated_description != found.get("desc", ""):
                     changes["desc"] = updated_description
-                if is_complete != card.is_complete:
-                    changes["dueComplete"] = str(card.is_complete).lower()
                 self._transport.request("PUT", f"/1/cards/{found['id']}", data=changes)
                 updated += 1
         return created, updated

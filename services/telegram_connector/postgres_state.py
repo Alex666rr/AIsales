@@ -100,6 +100,7 @@ telegram_proxies = sa.Table(
     "telegram_proxies",
     telegram_state_metadata,
     sa.Column("proxy_id", sa.Uuid(as_uuid=True), primary_key=True),
+    sa.Column("organization_id", sa.Uuid(as_uuid=True), nullable=True, index=True),
     sa.Column("endpoint", sa.String(512), nullable=False),
     sa.Column("capacity", sa.Integer(), nullable=False),
     sa.Column("credential_key_version", sa.Integer()),
@@ -647,11 +648,20 @@ class SqlAlchemyProxyAssignmentRepository:
         self._sessions = sessions
         self._credential_cipher = credential_cipher
 
-    async def put_proxy(self, proxy: ProxyConfig, *, default: bool = False) -> None:
-        await asyncio.to_thread(self._put_proxy, proxy, default)
+    async def put_proxy(
+        self,
+        proxy: ProxyConfig,
+        *,
+        default: bool = False,
+        organization_id: UUID | None = None,
+    ) -> None:
+        await asyncio.to_thread(self._put_proxy, proxy, default, organization_id)
 
     async def set_account_override(self, account_id: UUID, proxy_id: UUID | None) -> None:
         await asyncio.to_thread(self._set_account_override, account_id, proxy_id)
+
+    async def list_for_organization(self, organization_id: UUID) -> tuple[dict[str, object], ...]:
+        return await asyncio.to_thread(self._list_for_organization, organization_id)
 
     async def reserve_assignment(self, account_id: UUID) -> ProxyReservation | None:
         return await asyncio.to_thread(self._reserve_assignment, account_id)
@@ -664,18 +674,24 @@ class SqlAlchemyProxyAssignmentRepository:
     async def release_terminal_assignment(self, account_id: UUID) -> None:
         await asyncio.to_thread(self._release_terminal_assignment, account_id)
 
-    def _put_proxy(self, proxy: ProxyConfig, default: bool) -> None:
+    def _put_proxy(self, proxy: ProxyConfig, default: bool, organization_id: UUID | None) -> None:
         key_version, ciphertext = self._credential_cipher.encrypt(proxy)
         try:
             with self._sessions.begin() as session:
                 current = self._locked_proxy_row(session, proxy.proxy_id)
+                if current is not None and current["organization_id"] != organization_id:
+                    raise ValueError("proxy belongs to a different organization")
                 if default:
                     session.execute(
                         sa.update(telegram_proxies)
-                        .where(telegram_proxies.c.proxy_id != proxy.proxy_id)
+                        .where(
+                            telegram_proxies.c.proxy_id != proxy.proxy_id,
+                            _organization_filter(telegram_proxies.c.organization_id, organization_id),
+                        )
                         .values(is_default=False)
                     )
                 values = {
+                    "organization_id": organization_id,
                     "endpoint": proxy.endpoint,
                     "capacity": proxy.capacity,
                     "credential_key_version": key_version,
@@ -708,9 +724,20 @@ class SqlAlchemyProxyAssignmentRepository:
                 if self._lock_account(session, account_id) is None:
                     raise ValueError("unknown account")
                 if proxy_id is not None:
+                    organization_id = session.execute(
+                        sa.select(telegram_accounts.c.organization_id).where(
+                            telegram_accounts.c.account_id == account_id
+                        )
+                    ).scalar_one_or_none()
+                    if organization_id is None:
+                        raise ValueError("unknown account")
                     exists = session.execute(
                         sa.select(telegram_proxies.c.proxy_id).where(
-                            telegram_proxies.c.proxy_id == proxy_id
+                            telegram_proxies.c.proxy_id == proxy_id,
+                            sa.or_(
+                                telegram_proxies.c.organization_id == organization_id,
+                                telegram_proxies.c.organization_id.is_(None),
+                            ),
                         )
                     ).scalar_one_or_none()
                     if exists is None:
@@ -734,26 +761,81 @@ class SqlAlchemyProxyAssignmentRepository:
         except Exception:
             raise TelegramStateRepositoryUnavailable() from None
 
+    def _list_for_organization(self, organization_id: UUID) -> tuple[dict[str, object], ...]:
+        try:
+            with self._sessions() as session:
+                rows = session.execute(
+                    sa.select(
+                        telegram_proxies.c.proxy_id,
+                        telegram_proxies.c.endpoint,
+                        telegram_proxies.c.capacity,
+                        telegram_proxies.c.is_default,
+                        sa.func.count(telegram_proxy_assignments.c.account_id).label("assignment_count"),
+                    )
+                    .outerjoin(
+                        telegram_proxy_assignments,
+                        telegram_proxy_assignments.c.proxy_id == telegram_proxies.c.proxy_id,
+                    )
+                    .where(telegram_proxies.c.organization_id == organization_id)
+                    .group_by(
+                        telegram_proxies.c.proxy_id,
+                        telegram_proxies.c.endpoint,
+                        telegram_proxies.c.capacity,
+                        telegram_proxies.c.is_default,
+                    )
+                    .order_by(telegram_proxies.c.is_default.desc(), telegram_proxies.c.proxy_id)
+                ).mappings().all()
+            return tuple(
+                {
+                    "proxy_id": row["proxy_id"],
+                    "endpoint": row["endpoint"],
+                    "capacity": int(row["capacity"]),
+                    "is_default": bool(row["is_default"]),
+                    "assignment_count": int(row["assignment_count"]),
+                    "health": "awaiting_check",
+                }
+                for row in rows
+            )
+        except Exception:
+            raise TelegramStateRepositoryUnavailable() from None
+
     def _reserve_assignment(self, account_id: UUID) -> ProxyReservation | None:
         try:
             with self._sessions.begin() as session:
                 if self._lock_account(session, account_id) is None:
                     return None
+                organization_id = session.execute(
+                    sa.select(telegram_accounts.c.organization_id).where(
+                        telegram_accounts.c.account_id == account_id
+                    )
+                ).scalar_one()
                 override = self._override_row(session, account_id)
                 override_proxy_id = None if override is None else override["proxy_id"]
                 revision = 0 if override is None else int(override["revision"])
                 if override_proxy_id is None:
                     proxy_row = session.execute(
                         sa.select(telegram_proxies)
-                        .where(telegram_proxies.c.is_default.is_(True))
-                        .order_by(telegram_proxies.c.proxy_id)
+                        .where(
+                            telegram_proxies.c.is_default.is_(True),
+                            sa.or_(
+                                telegram_proxies.c.organization_id == organization_id,
+                                telegram_proxies.c.organization_id.is_(None),
+                            ),
+                        )
+                        .order_by(telegram_proxies.c.organization_id.is_(None), telegram_proxies.c.proxy_id)
                         .limit(1)
                         .with_for_update()
                     ).mappings().one_or_none()
                 else:
                     proxy_row = session.execute(
                         sa.select(telegram_proxies)
-                        .where(telegram_proxies.c.proxy_id == override_proxy_id)
+                        .where(
+                            telegram_proxies.c.proxy_id == override_proxy_id,
+                            sa.or_(
+                                telegram_proxies.c.organization_id == organization_id,
+                                telegram_proxies.c.organization_id.is_(None),
+                            ),
+                        )
                         .with_for_update()
                     ).mappings().one_or_none()
                 if proxy_row is None:
@@ -888,12 +970,24 @@ class SqlAlchemyProxyAssignmentRepository:
         ).scalar_one_or_none()
 
     @staticmethod
+    def _locked_account(session: Session, account_id: UUID):
+        return session.execute(
+            sa.select(telegram_accounts.c.account_id, telegram_accounts.c.organization_id)
+            .where(telegram_accounts.c.account_id == account_id)
+            .with_for_update()
+        ).mappings().one_or_none()
+
+    @staticmethod
     def _locked_proxy_row(session: Session, proxy_id: UUID):
         return session.execute(
             sa.select(telegram_proxies)
             .where(telegram_proxies.c.proxy_id == proxy_id)
             .with_for_update()
         ).mappings().one_or_none()
+
+
+def _organization_filter(column, organization_id: UUID | None):
+    return column.is_(None) if organization_id is None else column == organization_id
 
 
 def _stored_session(row) -> StoredSessionCiphertext:
