@@ -110,6 +110,14 @@ nav button[aria-current] { background: var(--accent); color: var(--text); font-w
 .connection-state { border: 1px solid #5a4fb0; border-radius: 999px; color: #dedbff; font-size: .8125rem; font-weight: 750; padding: 7px 10px; white-space: nowrap; }
 .connection-state-active { border-color: #34725e; color: #c8ffe6; }
 .connection-state-paused, .connection-state-archived { border-color: #65748b; color: #cad3df; }
+.organization-profile { display: grid; gap: 8px; }
+.organization-profile h2 { margin: 0; }
+.organization-profile form { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+.organization-profile label { flex: 1 1 16rem; }
+.organization-profile input { margin-top: 6px; width: 100%; }
+.staff-members { display: grid; gap: 10px; margin-bottom: 20px; }
+.staff-members article { align-items: center; background: #16253c; border: 1px solid #304868; border-radius: var(--radius-control); display: flex; gap: 16px; justify-content: space-between; padding: 14px; }
+.staff-members p { margin: 5px 0 0; }
 .telegram-account-row { flex-wrap: wrap; }
 .telegram-account-row > div:first-child { flex: 1 1 15rem; }
 .account-archive-action { background: #3a2432; border: 1px solid #8d5268; color: #ffd8e3; }

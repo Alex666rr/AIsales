@@ -50,12 +50,18 @@ def test_built_web_shell_is_served_without_capturing_health_endpoint(tmp_path):
 
     root_status, root_body, root_headers = asyncio.run(asgi_get(application, "/"))
     setup_status, setup_body, setup_headers = asyncio.run(asgi_get(application, "/setup"))
+    accounts_status, accounts_body, _accounts_headers = asyncio.run(asgi_get(application, "/accounts"))
+    team_status, team_body, _team_headers = asyncio.run(asgi_get(application, "/team"))
     health_status, _health_body, _health_headers = asyncio.run(asgi_get(application, "/healthz"))
 
     assert root_status == 200
     assert root_body == b"<main>AIsales administrative shell</main>"
     assert setup_status == 200
     assert setup_body == root_body
+    assert accounts_status == 200
+    assert accounts_body == root_body
+    assert team_status == 200
+    assert team_body == root_body
     assert (b"referrer-policy", b"no-referrer") in setup_headers
     assert (b"cache-control", b"no-store") in setup_headers
     assert b"text/html" in next(value for name, value in root_headers if name == b"content-type")

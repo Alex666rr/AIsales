@@ -6,6 +6,7 @@ import { App } from "./app";
 describe("App", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    window.history.replaceState({}, "", "/");
   });
 
   afterEach(() => {
@@ -60,6 +61,51 @@ describe("App", () => {
     expect(screen.getByRole("button", { name: "Подключить по номеру" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Подключить по QR" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Доступ команды" })).not.toBeInTheDocument();
+  });
+
+  it("opens the team URL directly with the organization name and staff controls for the owner", async () => {
+    window.history.replaceState({}, "", "/team");
+    const fetchMock = vi.fn((url: string) => {
+      if (url === "/auth/session") return Promise.resolve(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["company_owner"],
+      }), { status: 200 }));
+      if (url === "/workspace/organization") return Promise.resolve(new Response(JSON.stringify({
+        organization_id: "60000000-0000-0000-0000-000000000001", name: "AIsales Pro",
+      }), { status: 200 }));
+      if (url === "/workspace/members") return Promise.resolve(new Response(JSON.stringify([{
+        user_id: "80000000-0000-0000-0000-000000000001", email: "manager@example.test", role: "manager", is_active: true,
+      }]), { status: 200 }));
+      return Promise.reject(new Error(`unexpected request ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Команда" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "AIsales Pro" })).toBeInTheDocument();
+    expect(await screen.findByText("manager@example.test")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Отключить доступ" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сохранить название" })).toBeInTheDocument();
+  });
+
+  it("does not request team data or show owner controls for a manager", async () => {
+    window.history.replaceState({}, "", "/team");
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      actor_id: "70000000-0000-0000-0000-000000000002",
+      organization_id: "60000000-0000-0000-0000-000000000001",
+      roles: ["manager"],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Команда" })).toBeInTheDocument();
+    expect(screen.getByText("У вас нет прав на просмотр состава команды.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Отключить доступ" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Сохранить название" })).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("shows connected Telegram account states from the current organization only", async () => {

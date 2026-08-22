@@ -53,6 +53,7 @@ def create_app(*, composition=None, web_directory: Path | None = None) -> FastAP
         api.include_router(composition.setup_router)
         api.include_router(composition.provisioning_router)
         api.include_router(composition.staff_invitation_router)
+        api.include_router(composition.workspace_organization_router)
         api.include_router(composition.policy_router)
         api.include_router(composition.connection_router)
         api.include_router(composition.workspace_connection_router)
@@ -79,6 +80,11 @@ def create_app(*, composition=None, web_directory: Path | None = None) -> FastAP
                 index,
                 headers={"Referrer-Policy": "no-referrer", "Cache-Control": "no-store"},
             )
+
+        @api.get("/accounts", include_in_schema=False)
+        @api.get("/team", include_in_schema=False)
+        async def web_workspace_shell() -> FileResponse:
+            return FileResponse(index)
 
     return api
 
