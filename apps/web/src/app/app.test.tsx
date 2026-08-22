@@ -36,6 +36,31 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Доступ команды" })).toBeInTheDocument();
   });
 
+  it("opens the accounts workspace from the main navigation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            actor_id: "70000000-0000-0000-0000-000000000001",
+            organization_id: "60000000-0000-0000-0000-000000000001",
+            roles: ["company_owner"],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Администрирование" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
+
+    expect(screen.getByRole("heading", { name: "Telegram-аккаунты" })).toBeInTheDocument();
+    expect(screen.getByText("Подключения Telegram будут доступны в следующем функциональном блоке.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Доступ команды" })).not.toBeInTheDocument();
+  });
+
   it("shows the premium login form when there is no active server session", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
 

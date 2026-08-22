@@ -76,14 +76,15 @@ button:disabled { opacity: .65; cursor: wait; }
 .application-shell { min-height: 100vh; display: grid; grid-template-columns: 224px minmax(0, 1fr); background: var(--canvas); }
 aside { background: #121d2c; border-right: 1px solid var(--border); color: var(--text); padding: 28px 18px; }
 nav { display: grid; gap: 4px; margin-top: 32px; }
-nav a { border-radius: var(--radius-control); color: var(--muted); padding: 10px 12px; text-decoration: none; transition: background-color 160ms ease-out, color 160ms ease-out; }
-nav a:hover { background: var(--surface-raised); color: var(--text); }
-nav a[aria-current] { background: var(--accent); color: var(--text); font-weight: 700; }
+nav button { background: transparent; border: 0; border-radius: var(--radius-control); color: var(--muted); padding: 10px 12px; text-align: left; transition: background-color 160ms ease-out, color 160ms ease-out; }
+nav button:hover:not(:disabled) { background: var(--surface-raised); color: var(--text); }
+nav button[aria-current] { background: var(--accent); color: var(--text); font-weight: 700; }
 .workspace { max-width: 1120px; padding: 48px clamp(24px, 5vw, 72px); }
 .workspace h1 { font-size: clamp(1.75rem, 3vw, 2.25rem); letter-spacing: -.035em; margin: 0 0 10px; }
 .workspace > .muted { max-width: 62ch; }
 .workspace-grid { display: grid; gap: 20px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 32px; }
 .context-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-surface); padding: 24px; }
+.workspace-page { max-width: 860px; }
 .context-card h2 { font-size: 1.125rem; margin: 0; }
 .context-card h2 + .muted { margin: 8px 0 0; }
 .section-heading { align-items: start; display: flex; gap: 16px; justify-content: space-between; }
@@ -96,4 +97,4 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .setup-link { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 20px; }
 .staff-invitation { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 24px; }
 .recovery-codes { background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-control); display: grid; font-family: ui-monospace, monospace; gap: 8px; list-style: none; padding: 16px; }
-@media (max-width: 44rem) { .application-shell { grid-template-columns: 1fr; } aside { padding: 16px; } nav { display: flex; gap: 8px; margin-top: 16px; overflow-x: auto; } nav a { white-space: nowrap; } .workspace { padding: 32px 20px; } .workspace-grid { grid-template-columns: 1fr; } .section-heading { flex-direction: column; } .login-card { padding: 24px; } dl { grid-template-columns: 1fr; gap: 4px; } }
+@media (max-width: 44rem) { .application-shell { grid-template-columns: 1fr; } aside { padding: 16px; } nav { display: flex; gap: 8px; margin-top: 16px; overflow-x: auto; } nav button { white-space: nowrap; } .workspace { padding: 32px 20px; } .workspace-grid { grid-template-columns: 1fr; } .section-heading { flex-direction: column; } .login-card { padding: 24px; } dl { grid-template-columns: 1fr; gap: 4px; } }
