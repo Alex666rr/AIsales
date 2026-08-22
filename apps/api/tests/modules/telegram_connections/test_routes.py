@@ -8,7 +8,9 @@ from uuid import uuid4
 from fastapi import HTTPException
 
 from app.main import create_app
+from app.modules.auth.session_auth import CompanyOwnerSessionAuthenticator
 from app.modules.policy.models import PlatformOwnerPrincipal
+from app.modules.shared.commands import TenantContext
 from app.modules.telegram_connections.models import (
     AttemptStatus,
     AttemptView,
@@ -17,7 +19,11 @@ from app.modules.telegram_connections.models import (
     TdataConnectionView,
     ConnectionStatusView,
 )
-from app.modules.telegram_connections.routes import build_connection_router, build_tdata_ticket_router
+from app.modules.telegram_connections.routes import (
+    build_connection_router,
+    build_tdata_ticket_router,
+    build_workspace_connection_router,
+)
 from app.modules.telegram_connections.tdata_ticket import TdataTicketRegistry
 
 
@@ -267,3 +273,52 @@ def test_connection_status_route_exposes_only_safe_operational_state() -> None:
         "last_seen_at": None,
         "error_code": None,
     }
+
+
+def test_workspace_phone_route_is_available_only_to_company_owner_session() -> None:
+    owner_context = TenantContext(
+        organization_id=uuid4(),
+        actor_id=uuid4(),
+        roles=frozenset({"company_owner"}),
+    )
+
+    async def owner_session() -> TenantContext:
+        return owner_context
+
+    application = create_app()
+    application.include_router(
+        build_workspace_connection_router(
+            FakeAttempts(), principal_dependency=owner_session
+        )
+    )
+
+    status, body = asyncio.run(
+        asgi_post(
+            application,
+            "/workspace/telegram/connections/phone/start",
+            {"phone": "+12025550123"},
+        )
+    )
+
+    assert status == 201
+    assert json.loads(body)["status"] == "code_requested"
+    assert "+12025550123" not in body.decode()
+
+
+def test_company_owner_session_authenticator_rejects_manager_role() -> None:
+    class FakeSessionAuthenticator:
+        async def __call__(self, _session_id) -> TenantContext:
+            return TenantContext(
+                organization_id=uuid4(),
+                actor_id=uuid4(),
+                roles=frozenset({"manager"}),
+            )
+
+    authenticator = CompanyOwnerSessionAuthenticator(FakeSessionAuthenticator())
+
+    try:
+        asyncio.run(authenticator("server-issued-session"))
+    except HTTPException as error:
+        assert error.status_code == 403
+    else:
+        raise AssertionError("manager received workspace connection capability")

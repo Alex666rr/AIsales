@@ -5,8 +5,13 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from app.modules.policy.models import PlatformOwnerPrincipal
+from app.modules.shared.commands import TenantContext
 from app.modules.telegram_connections.models import AttemptStatus, ConnectionMethod, TdataConnectionView
-from app.modules.telegram_connections.service import ConnectionAttemptService, ConnectionStatusService
+from app.modules.telegram_connections.service import (
+    ConnectionAttemptService,
+    ConnectionStatusService,
+    WorkspaceConnectionAttemptService,
+)
 from telegram_connector.adapters.phone import AuthStep
 from telegram_connector.runtime.connection import ConnectionHealth, ConnectionRecord
 from telegram_connector.session_store import SessionRef
@@ -184,5 +189,33 @@ def test_connection_status_is_visible_only_to_the_owner_that_provisioned_the_acc
             pass
         else:
             raise AssertionError("another owner read an account status")
+
+    asyncio.run(scenario())
+
+
+def test_workspace_attempt_binds_telegram_authorization_to_actor_and_account_to_organization() -> None:
+    async def scenario() -> None:
+        organization_id, actor_id = uuid4(), uuid4()
+        context = TenantContext(
+            organization_id=organization_id,
+            actor_id=actor_id,
+            roles=frozenset({"company_owner"}),
+        )
+        phone, finalizer = FakePhoneAdapter(), FakeFinalizer()
+        service = WorkspaceConnectionAttemptService(
+            phone=phone,
+            qr=FakeQrAdapter(),
+            finalizer=finalizer,
+        )
+
+        started = await service.start_phone(context, "+12025550123")
+        await service.submit_code(context, started.attempt_id, "needs-2fa")
+        completed = await service.submit_password(context, started.attempt_id, "correct")
+
+        assert completed.status is AttemptStatus.AUTHORIZED
+        assert phone.owner_id == actor_id
+        assert finalizer.calls == [
+            (organization_id, 123456, b"TELETHON_STRING_SESSION\x00\x01phone-session")
+        ]
 
     asyncio.run(scenario())

@@ -191,6 +191,11 @@ def test_composed_app_mounts_authenticated_policy_routes_and_connector_services(
             "/telegram/connections/{attempt_id}/phone/password",
             "/telegram/connections/tdata/tickets",
             "/telegram/connections/tdata/tickets/{ticket_id}/handoff",
+            "/workspace/telegram/connections/phone/start",
+            "/workspace/telegram/connections/{attempt_id}/phone/confirm",
+            "/workspace/telegram/connections/{attempt_id}/phone/password",
+            "/workspace/telegram/connections/qr/start",
+            "/workspace/telegram/connections/{attempt_id}/qr/status",
         } <= paths
         assert composition.adapter_registry.names == (
             "phone", "qr", "tdata", "telethon_file", "telethon_string", "bot"

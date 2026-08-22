@@ -57,8 +57,88 @@ describe("App", () => {
     fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
 
     expect(screen.getByRole("heading", { name: "Telegram-аккаунты" })).toBeInTheDocument();
-    expect(screen.getByText("Подключения Telegram будут доступны в следующем функциональном блоке.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Подключить по номеру" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Подключить по QR" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Доступ команды" })).not.toBeInTheDocument();
+  });
+
+  it("starts a phone connection using only the browser session", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["company_owner"],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        attempt_id: "90000000-0000-0000-0000-000000000001",
+        method: "phone",
+        status: "code_requested",
+        expires_at: "2026-08-22T10:00:00Z",
+      }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Администрирование" });
+    fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
+    fireEvent.change(screen.getByLabelText("Номер Telegram"), { target: { value: "+12025550123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Подключить по номеру" }));
+
+    expect(await screen.findByLabelText("Код из Telegram")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/workspace/telegram/connections/phone/start",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("switches from Telegram code to the 2FA password without retaining the code", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["company_owner"],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        attempt_id: "90000000-0000-0000-0000-000000000001", method: "phone", status: "code_requested", expires_at: "2026-08-22T10:00:00Z",
+      }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        attempt_id: "90000000-0000-0000-0000-000000000001", method: "phone", status: "password_required", expires_at: "2026-08-22T10:00:00Z",
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Администрирование" });
+    fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
+    fireEvent.change(screen.getByLabelText("Номер Telegram"), { target: { value: "+12025550123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Подключить по номеру" }));
+    fireEvent.change(await screen.findByLabelText("Код из Telegram"), { target: { value: "12345" } });
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить код" }));
+
+    expect(await screen.findByLabelText("Пароль Telegram")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Код из Telegram")).not.toBeInTheDocument();
+  });
+
+  it("requests a QR connection only from the workspace route", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["company_owner"],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        attempt_id: "90000000-0000-0000-0000-000000000002", method: "qr", status: "pending", expires_at: "2026-08-22T10:00:00Z", qr_url: "tg://login?token=test-only",
+      }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Администрирование" });
+    fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
+    fireEvent.click(screen.getByRole("button", { name: "Подключить по QR" }));
+
+    expect(await screen.findByRole("button", { name: "Проверить вход" })).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/workspace/telegram/connections/qr/start",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("shows the premium login form when there is no active server session", async () => {

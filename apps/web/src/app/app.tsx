@@ -4,6 +4,7 @@ import { getCurrentSession, SessionContext } from "../shared/api/client";
 import { LoginForm } from "../features/auth/login-form";
 import { StaffInvitationForm } from "../features/staff/staff-invitation-form";
 import { SetupWizard } from "../features/auth/setup-wizard";
+import { TelegramConnectionPanel } from "../features/telegram/telegram-connection-panel";
 
 type AuthenticationState =
   | { kind: "loading" }
@@ -84,7 +85,9 @@ export function App() {
             </div>
             <span className="status-chip">Нет подключений</span>
           </div>
-          <p className="empty-state">Подключения Telegram будут доступны в следующем функциональном блоке.</p>
+          {state.session.roles.includes("company_owner")
+            ? <TelegramConnectionPanel />
+            : <p className="empty-state">Подключения Telegram доступны владельцу организации.</p>}
         </section>}
         {view === "team" && <section className="context-card workspace-page" aria-labelledby="team-page-heading">
           <div className="section-heading">

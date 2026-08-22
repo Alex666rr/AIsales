@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.modules.policy.models import PlatformOwnerPrincipal
+from app.modules.shared.commands import TenantContext
 
 from .models import AttemptView, ConnectionStatusView, QrStartView, TdataConnectionView
 from .tdata_ticket import TdataTicketRegistry
@@ -62,6 +63,7 @@ class PhoneAttemptRoutes(Protocol):
 
 
 PrincipalDependency = Callable[[], Awaitable[PlatformOwnerPrincipal]]
+WorkspacePrincipalDependency = Callable[[], Awaitable[TenantContext]]
 
 
 class TdataTicketView(BaseModel):
@@ -157,6 +159,103 @@ def build_connection_router(
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="telegram connection not found") from None
         except Exception:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="telegram connection unavailable") from None
+
+    return router
+
+
+class WorkspacePhoneAttemptRoutes(Protocol):
+    async def start_phone(self, principal: TenantContext, phone: str) -> AttemptView: ...
+
+    async def submit_code(
+        self, principal: TenantContext, attempt_id: UUID, code: str
+    ) -> AttemptView: ...
+
+    async def submit_password(
+        self, principal: TenantContext, attempt_id: UUID, password: str
+    ) -> AttemptView: ...
+
+    async def start_qr(self, principal: TenantContext) -> QrStartView: ...
+
+    async def qr_status(
+        self, principal: TenantContext, attempt_id: UUID
+    ) -> AttemptView: ...
+
+
+class WorkspaceConnectionStatusRoutes(Protocol):
+    async def get(
+        self, principal: TenantContext, account_id: UUID
+    ) -> ConnectionStatusView: ...
+
+
+def build_workspace_connection_router(
+    attempts: WorkspacePhoneAttemptRoutes,
+    *,
+    principal_dependency: WorkspacePrincipalDependency,
+    statuses: WorkspaceConnectionStatusRoutes | None = None,
+) -> APIRouter:
+    """Build session-authenticated workspace routes; never expose local tdata handoff."""
+    router = APIRouter(
+        prefix="/workspace/telegram/connections", tags=["workspace-telegram-connections"]
+    )
+
+    @router.post("/phone/start", response_model=AttemptView, status_code=status.HTTP_201_CREATED)
+    async def start_phone(
+        request: PhoneStartRequest,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> AttemptView:
+        return await _safe_call(attempts.start_phone(principal, request.phone))
+
+    @router.post("/{attempt_id}/phone/confirm", response_model=AttemptView)
+    async def confirm_phone(
+        attempt_id: UUID,
+        request: PhoneCodeRequest,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> AttemptView:
+        return await _safe_call(attempts.submit_code(principal, attempt_id, request.code))
+
+    @router.post("/{attempt_id}/phone/password", response_model=AttemptView)
+    async def confirm_password(
+        attempt_id: UUID,
+        request: PhonePasswordRequest,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> AttemptView:
+        return await _safe_call(attempts.submit_password(principal, attempt_id, request.password))
+
+    @router.post("/qr/start", response_model=QrStartView, status_code=status.HTTP_201_CREATED)
+    async def start_qr(
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> QrStartView:
+        return await _safe_call(attempts.start_qr(principal))
+
+    @router.get("/{attempt_id}/qr/status", response_model=AttemptView)
+    async def qr_status(
+        attempt_id: UUID,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> AttemptView:
+        return await _safe_call(attempts.qr_status(principal, attempt_id))
+
+    @router.get("/{account_id}", response_model=ConnectionStatusView)
+    async def connection_status(
+        account_id: UUID,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> ConnectionStatusView:
+        if statuses is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="telegram connection unavailable",
+            )
+        try:
+            return await statuses.get(principal, account_id)
+        except KeyError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="telegram connection not found",
+            ) from None
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="telegram connection unavailable",
+            ) from None
 
     return router
 

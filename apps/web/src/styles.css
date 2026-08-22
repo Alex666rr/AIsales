@@ -91,6 +91,18 @@ nav button[aria-current] { background: var(--accent); color: var(--text); font-w
 .section-heading .muted { margin: 8px 0 0; }
 .status-chip { background: #302b76; border: 1px solid #4f47a8; border-radius: 999px; color: #e2e0ff; font-size: .75rem; font-weight: 750; padding: 6px 9px; white-space: nowrap; }
 .empty-state { background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--muted); line-height: 1.55; margin: 24px 0 0; padding: 16px; }
+.telegram-connection { border-top: 1px solid var(--border); display: grid; gap: 18px; margin-top: 28px; padding-top: 24px; }
+.telegram-connection h2 { font-size: 1.125rem; margin: 0; }
+.telegram-connection h2 + .muted { margin: 8px 0 0; }
+.connection-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.secondary { background: transparent; border-color: var(--border); color: var(--text); }
+.secondary:hover:not(:disabled), .secondary.active { background: var(--surface-raised); border-color: #596c8c; }
+.connection-form { margin-top: 0; max-width: 480px; }
+.connection-form button, .qr-connect button { justify-self: start; }
+.qr-connect { display: grid; gap: 14px; justify-items: start; }
+.qr-connect svg { background: white; border-radius: 8px; padding: 8px; }
+.qr-connect .muted { margin: 0; max-width: 50ch; }
+.connection-success { background: #173d33; border: 1px solid #34725e; border-radius: var(--radius-control); color: #c8ffe6; margin: 0; padding: 14px; }
 dl { display: grid; gap: 12px; grid-template-columns: 10rem 1fr; margin-bottom: 0; }
 dt { color: var(--muted); }
 dd { margin: 0; overflow-wrap: anywhere; }
