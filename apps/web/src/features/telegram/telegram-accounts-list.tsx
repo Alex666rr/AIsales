@@ -35,6 +35,7 @@ export function TelegramAccountsList({ canManage = false }: { canManage?: boolea
     let current = true;
     void listTelegramAccounts()
       .then((accounts) => {
+        if (!Array.isArray(accounts)) throw new Error("telegram account directory was malformed");
         if (current) setState({ kind: "ready", accounts });
       })
       .catch(() => {

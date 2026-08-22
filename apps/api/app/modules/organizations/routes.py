@@ -13,6 +13,7 @@ from app.modules.organizations.models import UserRole
 from app.modules.organizations.provisioning import ProvisionedMember, ProvisionedOwner
 from app.modules.policy.models import PlatformOwnerPrincipal
 from app.modules.organizations.service import OrganizationPermissionDenied, OrganizationService
+from app.modules.organizations.workspace import WorkspaceOrganizationService
 from app.modules.shared.commands import TenantContext
 
 
@@ -58,6 +59,21 @@ class ProvisionedMemberResponse(MemberResponse):
     """One-time staff setup material, returned only to the authenticated owner."""
 
     setup_token: str = Field(repr=False)
+
+
+class OrganizationProfileResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    organization_id: UUID
+    name: str
+
+
+class RenameOrganizationRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+    name: str = Field(min_length=1, max_length=256)
+
+
+class WorkspaceMemberResponse(MemberResponse):
+    is_active: bool
 
 
 PrincipalDependency = Callable[[], Awaitable[TenantContext]]
@@ -126,6 +142,53 @@ def build_staff_invitation_router(
             role=member.role,
             setup_token=member.setup_token,
         )
+
+    return router
+
+
+def build_workspace_organization_router(
+    service: WorkspaceOrganizationService, *, principal_dependency: PrincipalDependency
+) -> APIRouter:
+    router = APIRouter(prefix="/workspace", tags=["workspace-organization"])
+
+    @router.get("/organization", response_model=OrganizationProfileResponse)
+    async def profile(principal: TenantContext = Depends(principal_dependency)) -> OrganizationProfileResponse:
+        try:
+            item = service.profile(principal)
+        except LookupError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="organization not found") from None
+        return OrganizationProfileResponse(organization_id=item.organization_id, name=item.name)
+
+    @router.patch("/organization", response_model=OrganizationProfileResponse)
+    async def rename(
+        request: RenameOrganizationRequest,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> OrganizationProfileResponse:
+        try:
+            item = service.rename(principal, request.name)
+        except OrganizationPermissionDenied:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="operation forbidden") from None
+        except LookupError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="organization not found") from None
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="request validation failed") from None
+        return OrganizationProfileResponse(organization_id=item.organization_id, name=item.name)
+
+    @router.get("/members", response_model=tuple[WorkspaceMemberResponse, ...])
+    async def members(principal: TenantContext = Depends(principal_dependency)) -> tuple[WorkspaceMemberResponse, ...]:
+        try:
+            users = service.members(principal)
+        except OrganizationPermissionDenied:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="operation forbidden") from None
+        return tuple(WorkspaceMemberResponse(user_id=user.id, email=user.email, role=user.role, is_active=user.disabled_at is None) for user in users)
+
+    @router.post("/members/{user_id}/deactivate", response_model=WorkspaceMemberResponse)
+    async def deactivate(user_id: UUID, principal: TenantContext = Depends(principal_dependency)) -> WorkspaceMemberResponse:
+        try:
+            user = service.deactivate(principal, user_id)
+        except OrganizationPermissionDenied:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="operation forbidden") from None
+        return WorkspaceMemberResponse(user_id=user.id, email=user.email, role=user.role, is_active=False)
 
     return router
 

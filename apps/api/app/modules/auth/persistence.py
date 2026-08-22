@@ -93,6 +93,21 @@ class SqlAlchemyAuthRepository:
                     sa.insert(organizations).values(organization_id=organization_id, name=name)
                 )
 
+    def get_organization_name(self, organization_id: UUID) -> str | None:
+        with self._engine.connect() as connection:
+            return connection.execute(
+                sa.select(organizations.c.name).where(organizations.c.organization_id == organization_id)
+            ).scalar_one_or_none()
+
+    def rename_organization(self, organization_id: UUID, name: str) -> str | None:
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                sa.update(organizations)
+                .where(organizations.c.organization_id == organization_id)
+                .values(name=name)
+            )
+            return name if result.rowcount == 1 else None
+
     def provision_company_owner(
         self,
         *,

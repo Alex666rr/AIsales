@@ -46,11 +46,13 @@ from .modules.auth.persistence import SqlAlchemyAuthRepository
 from .modules.auth.routes import build_auth_router, build_setup_router
 from .modules.auth.session_auth import CompanyOwnerSessionAuthenticator, SessionAuthenticator
 from .modules.auth.service import AuthService
-from .modules.organizations.provisioning import ProvisioningService, StaffInvitationService
+from .modules.organizations.provisioning import ProvisioningService, StaffInvitationService, StaffManagementService
 from .modules.organizations.routes import (
     build_platform_provisioning_router,
     build_staff_invitation_router,
+    build_workspace_organization_router,
 )
+from .modules.organizations.workspace import WorkspaceOrganizationService
 from .modules.policy.models import (
     AiOperation,
     AiOperationContext,
@@ -217,6 +219,7 @@ class ApplicationComposition:
     provisioning_service: ProvisioningService
     provisioning_router: object
     staff_invitation_router: object
+    workspace_organization_router: object
     setup_router: object
     policy_router: object
     connection_router: object
@@ -341,6 +344,13 @@ def build_application_composition(
         StaffInvitationService(auth_repository, now=lambda: datetime.now(UTC)),
         principal_dependency=session_authenticator,
     )
+    workspace_organization_router = build_workspace_organization_router(
+        WorkspaceOrganizationService(
+            auth_repository,
+            StaffManagementService(auth_repository, now=lambda: datetime.now(UTC)),
+        ),
+        principal_dependency=session_authenticator,
+    )
     setup_router = build_setup_router(provisioning_service)
     tdata_tickets = TdataTicketRegistry()
     tdata_handoffs = TdataHandoffService(
@@ -415,6 +425,7 @@ def build_application_composition(
         provisioning_service=provisioning_service,
         provisioning_router=provisioning_router,
         staff_invitation_router=staff_invitation_router,
+        workspace_organization_router=workspace_organization_router,
         setup_router=setup_router,
         policy_router=policy_router,
         connection_router=connection_router,

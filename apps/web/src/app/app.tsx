@@ -6,6 +6,8 @@ import { StaffInvitationForm } from "../features/staff/staff-invitation-form";
 import { SetupWizard } from "../features/auth/setup-wizard";
 import { TelegramConnectionPanel } from "../features/telegram/telegram-connection-panel";
 import { TelegramAccountsList } from "../features/telegram/telegram-accounts-list";
+import { OrganizationProfileCard } from "../features/organizations/organization-profile";
+import { StaffMembersList } from "../features/staff/staff-members-list";
 
 type AuthenticationState =
   | { kind: "loading" }
@@ -15,11 +17,28 @@ type AuthenticationState =
 
 type WorkspaceView = "overview" | "accounts" | "team";
 
+function viewFromPath(path: string): WorkspaceView {
+  return path === "/accounts" ? "accounts" : path === "/team" ? "team" : "overview";
+}
+
+function pathFromView(view: WorkspaceView): string { return view === "overview" ? "/" : `/${view}`; }
+
 export function App() {
   const setupToken = new URLSearchParams(window.location.search).get("token");
   if (window.location.pathname === "/setup") return <SetupWizard setupToken={setupToken ?? ""} />;
   const [state, setState] = useState<AuthenticationState>({ kind: "loading" });
-  const [view, setView] = useState<WorkspaceView>("overview");
+  const [view, setView] = useState<WorkspaceView>(() => viewFromPath(window.location.pathname));
+
+  useEffect(() => {
+    const onPopState = () => setView(viewFromPath(window.location.pathname));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  function navigate(next: WorkspaceView) {
+    window.history.pushState({}, "", pathFromView(next));
+    setView(next);
+  }
 
   async function refreshSession() {
     try {
@@ -43,9 +62,9 @@ export function App() {
       <aside>
         <p className="brand-mark">AIsales</p>
         <nav aria-label="Основная навигация">
-          <button aria-current={view === "overview" ? "page" : undefined} onClick={() => setView("overview")} type="button">Обзор</button>
-          <button aria-current={view === "accounts" ? "page" : undefined} onClick={() => setView("accounts")} type="button">Аккаунты</button>
-          <button aria-current={view === "team" ? "page" : undefined} onClick={() => setView("team")} type="button">Команда</button>
+          <button aria-current={view === "overview" ? "page" : undefined} onClick={() => navigate("overview")} type="button">Обзор</button>
+          <button aria-current={view === "accounts" ? "page" : undefined} onClick={() => navigate("accounts")} type="button">Аккаунты</button>
+          <button aria-current={view === "team" ? "page" : undefined} onClick={() => navigate("team")} type="button">Команда</button>
         </nav>
       </aside>
       <section className="workspace">
@@ -70,10 +89,8 @@ export function App() {
                 <p className="muted">Текущая роль и приглашения сотрудников организации.</p>
               </div>
             </div>
-            <dl>
-              <dt>Роль</dt><dd>{state.session.roles.join(", ")}</dd>
-              <dt>Организация</dt><dd>{state.session.organization_id}</dd>
-            </dl>
+            <p className="muted">Настройки организации и состава команды доступны в разделе «Команда».</p>
+            <dl><dt>Роль</dt><dd>{state.session.roles.join(", ")}</dd></dl>
             {state.session.roles.includes("company_owner") && <StaffInvitationForm />}
           </section>
           </div>
@@ -98,10 +115,8 @@ export function App() {
               <p className="muted">Роль текущего пользователя и управление приглашениями сотрудников.</p>
             </div>
           </div>
-          <dl>
-            <dt>Роль</dt><dd>{state.session.roles.join(", ")}</dd>
-            <dt>Организация</dt><dd>{state.session.organization_id}</dd>
-          </dl>
+          <OrganizationProfileCard canManage={state.session.roles.includes("company_owner")} />
+          <StaffMembersList canManage={state.session.roles.includes("company_owner")} />
           {state.session.roles.includes("company_owner") && <StaffInvitationForm />}
         </section>}
       </section>

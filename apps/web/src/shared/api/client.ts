@@ -30,6 +30,9 @@ export type TelegramAccountStatus = {
   error_code: string | null;
 };
 
+export type OrganizationProfile = { organization_id: string; name: string };
+export type WorkspaceMember = { user_id: string; email: string; role: "administrator" | "manager"; is_active: boolean };
+
 export class ApiError extends Error {
   constructor(public readonly status: number) {
     super("The server did not accept the request.");
@@ -74,6 +77,30 @@ export async function createStaffInvitation(input: {
   });
   if (!response.ok) throw new ApiError(response.status);
   return response.json() as Promise<StaffInvitation>;
+}
+
+export async function getOrganizationProfile(): Promise<OrganizationProfile> {
+  const response = await request("/workspace/organization");
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<OrganizationProfile>;
+}
+
+export async function renameOrganization(name: string): Promise<OrganizationProfile> {
+  const response = await request("/workspace/organization", { method: "PATCH", body: JSON.stringify({ name }) });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<OrganizationProfile>;
+}
+
+export async function listWorkspaceMembers(): Promise<WorkspaceMember[]> {
+  const response = await request("/workspace/members");
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<WorkspaceMember[]>;
+}
+
+export async function deactivateWorkspaceMember(userId: string): Promise<WorkspaceMember> {
+  const response = await request(`/workspace/members/${userId}/deactivate`, { method: "POST" });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<WorkspaceMember>;
 }
 
 export async function activateSetup(setupToken: string, password: string): Promise<{
