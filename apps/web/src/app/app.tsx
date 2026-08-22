@@ -11,10 +11,13 @@ type AuthenticationState =
   | { kind: "authenticated"; session: SessionContext }
   | { kind: "unavailable" };
 
+type WorkspaceView = "overview" | "accounts" | "team";
+
 export function App() {
   const setupToken = new URLSearchParams(window.location.search).get("token");
   if (window.location.pathname === "/setup") return <SetupWizard setupToken={setupToken ?? ""} />;
   const [state, setState] = useState<AuthenticationState>({ kind: "loading" });
+  const [view, setView] = useState<WorkspaceView>("overview");
 
   async function refreshSession() {
     try {
@@ -38,15 +41,16 @@ export function App() {
       <aside>
         <p className="brand-mark">AIsales</p>
         <nav aria-label="Основная навигация">
-          <a aria-current="page" href="#overview">Обзор</a>
-          <a href="#accounts">Аккаунты</a>
-          <a href="#team">Команда</a>
+          <button aria-current={view === "overview" ? "page" : undefined} onClick={() => setView("overview")} type="button">Обзор</button>
+          <button aria-current={view === "accounts" ? "page" : undefined} onClick={() => setView("accounts")} type="button">Аккаунты</button>
+          <button aria-current={view === "team" ? "page" : undefined} onClick={() => setView("team")} type="button">Команда</button>
         </nav>
       </aside>
-      <section className="workspace" id="overview">
-        <h1>Администрирование</h1>
-        <p className="muted">Управляйте аккаунтами и доступом команды через защищённую серверную сессию.</p>
-        <div className="workspace-grid">
+      <section className="workspace">
+        {view === "overview" && <>
+          <h1>Администрирование</h1>
+          <p className="muted">Управляйте аккаунтами и доступом команды через защищённую серверную сессию.</p>
+          <div className="workspace-grid">
           <section className="context-card" id="accounts" aria-labelledby="accounts-heading">
             <div className="section-heading">
               <div>
@@ -70,7 +74,31 @@ export function App() {
             </dl>
             {state.session.roles.includes("company_owner") && <StaffInvitationForm />}
           </section>
-        </div>
+          </div>
+        </>}
+        {view === "accounts" && <section className="context-card workspace-page" aria-labelledby="accounts-page-heading">
+          <div className="section-heading">
+            <div>
+              <h1 id="accounts-page-heading">Telegram-аккаунты</h1>
+              <p className="muted">Здесь будут отображаться подключённые рабочие аккаунты и их состояние.</p>
+            </div>
+            <span className="status-chip">Нет подключений</span>
+          </div>
+          <p className="empty-state">Подключения Telegram будут доступны в следующем функциональном блоке.</p>
+        </section>}
+        {view === "team" && <section className="context-card workspace-page" aria-labelledby="team-page-heading">
+          <div className="section-heading">
+            <div>
+              <h1 id="team-page-heading">Команда</h1>
+              <p className="muted">Роль текущего пользователя и управление приглашениями сотрудников.</p>
+            </div>
+          </div>
+          <dl>
+            <dt>Роль</dt><dd>{state.session.roles.join(", ")}</dd>
+            <dt>Организация</dt><dd>{state.session.organization_id}</dd>
+          </dl>
+          {state.session.roles.includes("company_owner") && <StaffInvitationForm />}
+        </section>}
       </section>
     </main>
   );

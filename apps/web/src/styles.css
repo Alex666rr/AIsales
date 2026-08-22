@@ -55,7 +55,9 @@ select option { background: var(--surface-raised); }
 .login-card input:focus { border-color: #aa92ff; box-shadow: 0 0 0 3px rgb(155 124 255 / 16%); }
 .inline-control { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: .9rem; font-weight: 500; }
 .inline-control input { width: auto; accent-color: var(--accent); }
-.password-visibility-indicator { color: #aebbd5; display: grid; line-height: 1; place-items: center; pointer-events: none; position: absolute; right: 17px; top: 50%; transform: translateY(-50%); }
+.password-visibility-indicator { align-items: center; background: transparent; border: 0; border-radius: 5px; color: #aebbd5; display: grid; height: 32px; justify-content: center; line-height: 1; padding: 0; position: absolute; right: 9px; top: 50%; transform: translateY(-50%); width: 32px; }
+.password-visibility-indicator:hover:not(:disabled) { background: rgb(174 187 213 / 10%); color: #d9dfed; }
+.password-visibility-indicator:focus-visible { outline: 2px solid #aa92ff; outline-offset: 2px; }
 .password-visibility-indicator svg { fill: none; height: 19px; stroke: currentcolor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; width: 19px; }
 .recovery-help { color: #a59aed; font-size: .875rem; line-height: 1.45; margin: 0; }
 .verification-toggle { background: transparent; border: 0; color: #ac9cf8; display: inline; font: inherit; padding: 0; text-align: left; }
@@ -74,14 +76,15 @@ button:disabled { opacity: .65; cursor: wait; }
 .application-shell { min-height: 100vh; display: grid; grid-template-columns: 224px minmax(0, 1fr); background: var(--canvas); }
 aside { background: #121d2c; border-right: 1px solid var(--border); color: var(--text); padding: 28px 18px; }
 nav { display: grid; gap: 4px; margin-top: 32px; }
-nav a { border-radius: var(--radius-control); color: var(--muted); padding: 10px 12px; text-decoration: none; transition: background-color 160ms ease-out, color 160ms ease-out; }
-nav a:hover { background: var(--surface-raised); color: var(--text); }
-nav a[aria-current] { background: var(--accent); color: var(--text); font-weight: 700; }
+nav button { background: transparent; border: 0; border-radius: var(--radius-control); color: var(--muted); padding: 10px 12px; text-align: left; transition: background-color 160ms ease-out, color 160ms ease-out; }
+nav button:hover:not(:disabled) { background: var(--surface-raised); color: var(--text); }
+nav button[aria-current] { background: var(--accent); color: var(--text); font-weight: 700; }
 .workspace { max-width: 1120px; padding: 48px clamp(24px, 5vw, 72px); }
 .workspace h1 { font-size: clamp(1.75rem, 3vw, 2.25rem); letter-spacing: -.035em; margin: 0 0 10px; }
 .workspace > .muted { max-width: 62ch; }
 .workspace-grid { display: grid; gap: 20px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 32px; }
 .context-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-surface); padding: 24px; }
+.workspace-page { max-width: 860px; }
 .context-card h2 { font-size: 1.125rem; margin: 0; }
 .context-card h2 + .muted { margin: 8px 0 0; }
 .section-heading { align-items: start; display: flex; gap: 16px; justify-content: space-between; }
@@ -94,4 +97,4 @@ dd { margin: 0; overflow-wrap: anywhere; }
 .setup-link { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 20px; }
 .staff-invitation { border-top: 1px solid var(--border); margin-top: 24px; padding-top: 24px; }
 .recovery-codes { background: var(--surface-raised); border: 1px solid var(--border); border-radius: var(--radius-control); display: grid; font-family: ui-monospace, monospace; gap: 8px; list-style: none; padding: 16px; }
-@media (max-width: 44rem) { .application-shell { grid-template-columns: 1fr; } aside { padding: 16px; } nav { display: flex; gap: 8px; margin-top: 16px; overflow-x: auto; } nav a { white-space: nowrap; } .workspace { padding: 32px 20px; } .workspace-grid { grid-template-columns: 1fr; } .section-heading { flex-direction: column; } .login-card { padding: 24px; } dl { grid-template-columns: 1fr; gap: 4px; } }
+@media (max-width: 44rem) { .application-shell { grid-template-columns: 1fr; } aside { padding: 16px; } nav { display: flex; gap: 8px; margin-top: 16px; overflow-x: auto; } nav button { white-space: nowrap; } .workspace { padding: 32px 20px; } .workspace-grid { grid-template-columns: 1fr; } .section-heading { flex-direction: column; } .login-card { padding: 24px; } dl { grid-template-columns: 1fr; gap: 4px; } }

@@ -36,6 +36,31 @@ describe("App", () => {
     expect(screen.getByRole("heading", { name: "Доступ команды" })).toBeInTheDocument();
   });
 
+  it("opens the accounts workspace from the main navigation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            actor_id: "70000000-0000-0000-0000-000000000001",
+            organization_id: "60000000-0000-0000-0000-000000000001",
+            roles: ["company_owner"],
+          }),
+          { status: 200 },
+        ),
+      ),
+    );
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Администрирование" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
+
+    expect(screen.getByRole("heading", { name: "Telegram-аккаунты" })).toBeInTheDocument();
+    expect(screen.getByText("Подключения Telegram будут доступны в следующем функциональном блоке.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Доступ команды" })).not.toBeInTheDocument();
+  });
+
   it("shows the premium login form when there is no active server session", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
 
@@ -49,7 +74,33 @@ describe("App", () => {
     expect(screen.getByText("Нет доступа к приложению?")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Использовать код восстановления" })).toBeInTheDocument();
     expect(screen.getAllByTestId("login-field-icon")).toHaveLength(3);
-    expect(screen.getByTestId("password-visibility-icon")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("button", { name: "Показать пароль" })).toBeInTheDocument();
+  });
+
+  it("shows and hides the password from the visibility control", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+
+    render(<App />);
+
+    const password = await screen.findByLabelText("Пароль");
+    expect(password).toHaveAttribute("type", "password");
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать пароль" }));
+
+    expect(password).toHaveAttribute("type", "text");
+    expect(screen.getByRole("button", { name: "Скрыть пароль" })).toBeInTheDocument();
+  });
+
+  it("accepts only six digits for the Google Authenticator code", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+
+    render(<App />);
+
+    const verification = await screen.findByLabelText("Google Authenticator");
+    fireEvent.change(verification, { target: { value: "12a3456789" } });
+
+    expect(verification).toHaveValue("123456");
+    expect(verification).toHaveAttribute("maxLength", "6");
   });
 
   it("switches the second-factor field to a recovery code without a checkbox", async () => {
