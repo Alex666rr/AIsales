@@ -191,6 +191,14 @@ class WorkspaceAccountDirectoryRoutes(Protocol):
     async def list(self, principal: TenantContext) -> tuple[ConnectionStatusView, ...]: ...
 
 
+class WorkspaceAccountControlRoutes(Protocol):
+    async def pause(self, principal: TenantContext, account_id: UUID) -> ConnectionStatusView: ...
+
+    async def resume(self, principal: TenantContext, account_id: UUID) -> ConnectionStatusView: ...
+
+    async def archive(self, principal: TenantContext, account_id: UUID) -> ConnectionStatusView: ...
+
+
 def build_workspace_connection_router(
     attempts: WorkspacePhoneAttemptRoutes,
     *,
@@ -285,6 +293,55 @@ def build_workspace_account_directory_router(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="telegram connection unavailable",
             ) from None
+
+    return router
+
+
+def build_workspace_account_controls_router(
+    controls: WorkspaceAccountControlRoutes,
+    *,
+    principal_dependency: WorkspacePrincipalDependency,
+) -> APIRouter:
+    """Owner-only account lifecycle controls derived from the browser session."""
+    router = APIRouter(
+        prefix="/workspace/telegram/accounts", tags=["workspace-telegram-connections"]
+    )
+
+    async def transition(operation) -> ConnectionStatusView:
+        try:
+            return await operation
+        except PermissionError:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="company owner required") from None
+        except KeyError:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="telegram connection not found") from None
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="telegram connection transition rejected") from None
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="telegram connection unavailable",
+            ) from None
+
+    @router.post("/{account_id}/pause", response_model=ConnectionStatusView)
+    async def pause_account(
+        account_id: UUID,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> ConnectionStatusView:
+        return await transition(controls.pause(principal, account_id))
+
+    @router.post("/{account_id}/resume", response_model=ConnectionStatusView)
+    async def resume_account(
+        account_id: UUID,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> ConnectionStatusView:
+        return await transition(controls.resume(principal, account_id))
+
+    @router.post("/{account_id}/archive", response_model=ConnectionStatusView)
+    async def archive_account(
+        account_id: UUID,
+        principal: TenantContext = Depends(principal_dependency),
+    ) -> ConnectionStatusView:
+        return await transition(controls.archive(principal, account_id))
 
     return router
 

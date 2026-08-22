@@ -86,7 +86,7 @@ export function App() {
             </div>
             <span className="status-chip">Статусы аккаунтов</span>
           </div>
-          <TelegramAccountsList />
+          <TelegramAccountsList canManage={state.session.roles.includes("company_owner")} />
           {state.session.roles.includes("company_owner")
             ? <TelegramConnectionPanel />
             : <p className="empty-state">Подключения Telegram доступны владельцу организации.</p>}

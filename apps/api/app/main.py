@@ -57,6 +57,7 @@ def create_app(*, composition=None, web_directory: Path | None = None) -> FastAP
         api.include_router(composition.connection_router)
         api.include_router(composition.workspace_connection_router)
         api.include_router(composition.workspace_account_directory_router)
+        api.include_router(composition.workspace_account_controls_router)
         api.include_router(composition.tdata_router)
         api.state.composition = composition
 

@@ -89,6 +89,67 @@ describe("App", () => {
     );
   });
 
+  it("lets the company owner pause an account without exposing connection secrets", async () => {
+    const accountId = "90000000-0000-0000-0000-000000000001";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["company_owner"],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{
+        account_id: accountId, state: "active", last_seen_at: null, error_code: null,
+      }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        account_id: accountId, state: "paused", last_seen_at: null, error_code: null,
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Администрирование" });
+    fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Приостановить" }));
+
+    expect(await screen.findByText("Приостановлен")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      `/workspace/telegram/accounts/${accountId}/pause`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("requires the owner to confirm account archival before sending the request", async () => {
+    const accountId = "90000000-0000-0000-0000-000000000001";
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["company_owner"],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{
+        account_id: accountId, state: "paused", last_seen_at: null, error_code: null,
+      }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        account_id: accountId, state: "archived", last_seen_at: null, error_code: null,
+      }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Администрирование" });
+    fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Архивировать" }));
+
+    expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить архивирование" }));
+
+    expect(await screen.findByText("Архив")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      `/workspace/telegram/accounts/${accountId}/archive`,
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("starts a phone connection using only the browser session", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({

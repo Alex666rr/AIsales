@@ -148,3 +148,14 @@ export async function listTelegramAccounts(): Promise<TelegramAccountStatus[]> {
   if (!response.ok) throw new ApiError(response.status);
   return response.json() as Promise<TelegramAccountStatus[]>;
 }
+
+export type TelegramAccountAction = "pause" | "resume" | "archive";
+
+export async function transitionTelegramAccount(
+  accountId: string,
+  action: TelegramAccountAction,
+): Promise<TelegramAccountStatus> {
+  const response = await request(`/workspace/telegram/accounts/${accountId}/${action}`, { method: "POST" });
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramAccountStatus>;
+}

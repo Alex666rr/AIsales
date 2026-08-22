@@ -22,6 +22,7 @@ from app.modules.telegram_connections.models import (
 from app.modules.telegram_connections.routes import (
     build_connection_router,
     build_tdata_ticket_router,
+    build_workspace_account_controls_router,
     build_workspace_account_directory_router,
     build_workspace_connection_router,
 )
@@ -159,6 +160,23 @@ class FakeDirectory:
         )
 
 
+class FakeControls:
+    async def pause(self, principal, account_id) -> ConnectionStatusView:
+        return ConnectionStatusView(
+            account_id=account_id, state="paused", last_seen_at=None, error_code=None
+        )
+
+    async def resume(self, principal, account_id) -> ConnectionStatusView:
+        return ConnectionStatusView(
+            account_id=account_id, state="quarantine", last_seen_at=None, error_code=None
+        )
+
+    async def archive(self, principal, account_id) -> ConnectionStatusView:
+        return ConnectionStatusView(
+            account_id=account_id, state="archived", last_seen_at=None, error_code=None
+        )
+
+
 def test_phone_start_route_returns_only_safe_attempt_view() -> None:
     async def principal() -> PlatformOwnerPrincipal:
         return PlatformOwnerPrincipal(principal_id=uuid4())
@@ -202,6 +220,26 @@ def test_workspace_account_directory_uses_session_tenant_context() -> None:
             "error_code": None,
         }
     ]
+
+
+def test_workspace_account_controls_allow_only_the_session_owner_capability() -> None:
+    async def owner() -> TenantContext:
+        return TenantContext(
+            organization_id=uuid4(), actor_id=uuid4(), roles=frozenset({"company_owner"})
+        )
+
+    account_id = UUID(int=1)
+    application = create_app()
+    application.include_router(
+        build_workspace_account_controls_router(FakeControls(), principal_dependency=owner)
+    )
+
+    status, body = asyncio.run(
+        asgi_post(application, f"/workspace/telegram/accounts/{account_id}/pause", {})
+    )
+
+    assert status == 200
+    assert json.loads(body)["state"] == "paused"
 
 
 def test_phone_start_route_fails_before_reading_body_without_authenticated_owner() -> None:

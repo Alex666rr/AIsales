@@ -10,6 +10,7 @@ from app.modules.telegram_connections.models import AttemptStatus, ConnectionMet
 from app.modules.telegram_connections.service import (
     ConnectionAttemptService,
     ConnectionStatusService,
+    WorkspaceAccountControlService,
     WorkspaceAccountDirectoryService,
     WorkspaceConnectionAttemptService,
 )
@@ -130,6 +131,35 @@ class FakeDirectoryConnections:
 
     async def get(self, account_id: UUID) -> ConnectionRecord | None:
         return self.records.get(account_id)
+
+
+class FakeControlAccounts:
+    def __init__(self, organization_id: UUID) -> None:
+        self.organization_id = organization_id
+
+    async def organization_for_async(self, _account_id: UUID) -> UUID:
+        return self.organization_id
+
+
+class FakeControlConnections:
+    def __init__(self, record: ConnectionRecord) -> None:
+        self.record = record
+        self.transitions: list[str] = []
+
+    async def get(self, _account_id: UUID) -> ConnectionRecord:
+        return self.record
+
+    async def save(self, record: ConnectionRecord) -> None:
+        self.record = record
+
+    async def force_terminal(self, _account_id: UUID, state: str, now: datetime) -> ConnectionRecord:
+        self.transitions.append(state)
+        self.record = self.record.model_copy(
+            update={"health": self.record.health.model_copy(
+                update={"state": state, "last_seen_at": now, "error_code": None}
+            )}
+        )
+        return self.record
 
 
 def test_phone_attempt_maps_code_and_2fa_without_exposing_phone_or_code() -> None:
@@ -286,5 +316,45 @@ def test_workspace_account_directory_returns_only_current_organization_connectio
                 "error_code": None,
             },
         )
+
+    asyncio.run(scenario())
+
+
+def test_workspace_account_controls_require_owner_and_make_terminal_transitions_safe() -> None:
+    async def scenario() -> None:
+        organization_id, account_id = uuid4(), uuid4()
+        record = ConnectionRecord(
+            account_id=account_id,
+            session_ref=SessionRef(account_id=account_id, session_id=uuid4(), key_version=1),
+            health=ConnectionHealth(
+                state="active", last_seen_at=datetime.now(UTC), proxy_ip=None,
+                latency_ms=None, error_code=None,
+            ),
+        )
+        connections = FakeControlConnections(record)
+        service = WorkspaceAccountControlService(
+            accounts=FakeControlAccounts(organization_id),
+            connections=connections,
+            now=lambda: datetime(2026, 8, 22, tzinfo=UTC),
+        )
+        owner = TenantContext(
+            organization_id=organization_id, actor_id=uuid4(), roles=frozenset({"company_owner"})
+        )
+
+        paused = await service.pause(owner, account_id)
+        resumed = await service.resume(owner, account_id)
+        archived = await service.archive(owner, account_id)
+
+        assert (paused.state, resumed.state, archived.state) == ("paused", "quarantine", "archived")
+        assert connections.transitions == ["paused", "archived"]
+        try:
+            await service.pause(
+                TenantContext(organization_id=organization_id, actor_id=uuid4(), roles=frozenset({"manager"})),
+                account_id,
+            )
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError("manager changed a Telegram account lifecycle")
 
     asyncio.run(scenario())
