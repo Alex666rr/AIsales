@@ -178,6 +178,25 @@ def test_authoritative_account_organization_lookup_survives_restart(tmp_path):
         engine.dispose()
 
 
+def test_account_directory_is_scoped_to_one_persisted_organization(tmp_path):
+    """The workspace must never discover accounts that belong to another organization."""
+    other_organization = UUID(int=202)
+    engine, sessions = durable_sessions(tmp_path)
+    try:
+        repository_class = repository_type("SqlAlchemyTelegramAccountRepository")
+        repository_class(sessions).put(ACCOUNT_TWO, other_organization)
+        repository_class(sessions).put(ACCOUNT_ONE, ORGANIZATION)
+
+        assert repository_class(sessions).list_account_ids_by_organization(ORGANIZATION) == (
+            ACCOUNT_ONE,
+        )
+        assert asyncio.run(
+            repository_class(sessions).list_account_ids_by_organization_async(other_organization)
+        ) == (ACCOUNT_TWO,)
+    finally:
+        engine.dispose()
+
+
 def test_telegram_numeric_account_identity_is_unique_across_organizations(tmp_path):
     """A repeated import must reuse its platform account, never create a cross-org duplicate."""
     engine, sessions = durable_sessions(tmp_path)

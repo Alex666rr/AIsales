@@ -39,6 +39,12 @@ class AccountOwnershipLookup(Protocol):
     async def organization_for_async(self, account_id: UUID) -> UUID | None: ...
 
 
+class OrganizationAccountLookup(Protocol):
+    async def list_account_ids_by_organization_async(
+        self, organization_id: UUID
+    ) -> tuple[UUID, ...]: ...
+
+
 class ConnectionLookup(Protocol):
     async def get(self, account_id: UUID): ...
 
@@ -244,6 +250,38 @@ class WorkspaceConnectionStatusService:
             last_seen_at=record.health.last_seen_at,
             error_code=record.health.error_code,
         )
+
+
+class WorkspaceAccountDirectoryService:
+    """List redacted connection states only for the signed-in organization."""
+
+    def __init__(
+        self,
+        *,
+        accounts: OrganizationAccountLookup,
+        connections: ConnectionLookup,
+    ) -> None:
+        self._accounts = accounts
+        self._connections = connections
+
+    async def list(self, principal: TenantContext) -> tuple[ConnectionStatusView, ...]:
+        account_ids = await self._accounts.list_account_ids_by_organization_async(
+            principal.organization_id
+        )
+        views: list[ConnectionStatusView] = []
+        for account_id in account_ids:
+            record = await self._connections.get(account_id)
+            if record is None:
+                continue
+            views.append(
+                ConnectionStatusView(
+                    account_id=account_id,
+                    state=record.health.state,
+                    last_seen_at=record.health.last_seen_at,
+                    error_code=record.health.error_code,
+                )
+            )
+        return tuple(views)
 
 
 def _view(step: AuthStep, method: ConnectionMethod, states: dict[str, AttemptStatus]) -> AttemptView:

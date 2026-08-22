@@ -10,6 +10,7 @@ from app.modules.telegram_connections.models import AttemptStatus, ConnectionMet
 from app.modules.telegram_connections.service import (
     ConnectionAttemptService,
     ConnectionStatusService,
+    WorkspaceAccountDirectoryService,
     WorkspaceConnectionAttemptService,
 )
 from telegram_connector.adapters.phone import AuthStep
@@ -111,6 +112,24 @@ class FakeConnections:
                 latency_ms=None, error_code=None,
             ),
         )
+
+
+class FakeDirectoryAccounts:
+    def __init__(self, account_ids: tuple[UUID, ...]) -> None:
+        self.account_ids = account_ids
+        self.requested_organization_id: UUID | None = None
+
+    async def list_account_ids_by_organization_async(self, organization_id: UUID) -> tuple[UUID, ...]:
+        self.requested_organization_id = organization_id
+        return self.account_ids
+
+
+class FakeDirectoryConnections:
+    def __init__(self, records: dict[UUID, ConnectionRecord]) -> None:
+        self.records = records
+
+    async def get(self, account_id: UUID) -> ConnectionRecord | None:
+        return self.records.get(account_id)
 
 
 def test_phone_attempt_maps_code_and_2fa_without_exposing_phone_or_code() -> None:
@@ -217,5 +236,55 @@ def test_workspace_attempt_binds_telegram_authorization_to_actor_and_account_to_
         assert finalizer.calls == [
             (organization_id, 123456, b"TELETHON_STRING_SESSION\x00\x01phone-session")
         ]
+
+    asyncio.run(scenario())
+
+
+def test_workspace_account_directory_returns_only_current_organization_connection_states() -> None:
+    async def scenario() -> None:
+        organization_id, actor_id = uuid4(), uuid4()
+        connected_account_id, unfinished_account_id = uuid4(), uuid4()
+        last_seen_at = datetime.now(UTC)
+        accounts = FakeDirectoryAccounts((connected_account_id, unfinished_account_id))
+        service = WorkspaceAccountDirectoryService(
+            accounts=accounts,
+            connections=FakeDirectoryConnections(
+                {
+                    connected_account_id: ConnectionRecord(
+                        account_id=connected_account_id,
+                        session_ref=SessionRef(
+                            account_id=connected_account_id,
+                            session_id=uuid4(),
+                            key_version=1,
+                        ),
+                        health=ConnectionHealth(
+                            state="quarantine",
+                            last_seen_at=last_seen_at,
+                            proxy_ip=None,
+                            latency_ms=None,
+                            error_code=None,
+                        ),
+                    )
+                }
+            ),
+        )
+
+        result = await service.list(
+            TenantContext(
+                organization_id=organization_id,
+                actor_id=actor_id,
+                roles=frozenset({"manager"}),
+            )
+        )
+
+        assert accounts.requested_organization_id == organization_id
+        assert tuple(item.model_dump() for item in result) == (
+            {
+                "account_id": connected_account_id,
+                "state": "quarantine",
+                "last_seen_at": last_seen_at,
+                "error_code": None,
+            },
+        )
 
     asyncio.run(scenario())

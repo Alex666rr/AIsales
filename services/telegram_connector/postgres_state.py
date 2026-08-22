@@ -236,6 +236,24 @@ class SqlAlchemyTelegramAccountRepository:
     async def organization_for_async(self, account_id: UUID) -> UUID | None:
         return await asyncio.to_thread(self.organization_for, account_id)
 
+    def list_account_ids_by_organization(self, organization_id: UUID) -> tuple[UUID, ...]:
+        try:
+            with self._sessions() as session:
+                return tuple(
+                    session.execute(
+                        sa.select(telegram_accounts.c.account_id)
+                        .where(telegram_accounts.c.organization_id == organization_id)
+                        .order_by(telegram_accounts.c.account_id)
+                    ).scalars()
+                )
+        except Exception:
+            raise TelegramStateRepositoryUnavailable() from None
+
+    async def list_account_ids_by_organization_async(
+        self, organization_id: UUID
+    ) -> tuple[UUID, ...]:
+        return await asyncio.to_thread(self.list_account_ids_by_organization, organization_id)
+
 
 class SqlAlchemyCiphertextSessionRepository:
     """Synchronous ciphertext repository for the psycopg-backed encryption boundary."""

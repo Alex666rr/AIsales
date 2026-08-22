@@ -62,6 +62,33 @@ describe("App", () => {
     expect(screen.queryByRole("heading", { name: "Доступ команды" })).not.toBeInTheDocument();
   });
 
+  it("shows connected Telegram account states from the current organization only", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        actor_id: "70000000-0000-0000-0000-000000000001",
+        organization_id: "60000000-0000-0000-0000-000000000001",
+        roles: ["manager"],
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{
+        account_id: "90000000-0000-0000-0000-000000000001",
+        state: "quarantine",
+        last_seen_at: "2026-08-22T10:00:00Z",
+        error_code: null,
+      }]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Администрирование" });
+    fireEvent.click(screen.getByRole("button", { name: "Аккаунты" }));
+
+    expect(await screen.findByText("Карантин")).toBeInTheDocument();
+    expect(screen.getByText("Аккаунт #90000000")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      "/workspace/telegram/accounts",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+
   it("starts a phone connection using only the browser session", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
@@ -69,6 +96,7 @@ describe("App", () => {
         organization_id: "60000000-0000-0000-0000-000000000001",
         roles: ["company_owner"],
       }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         attempt_id: "90000000-0000-0000-0000-000000000001",
         method: "phone",
@@ -97,6 +125,7 @@ describe("App", () => {
         organization_id: "60000000-0000-0000-0000-000000000001",
         roles: ["company_owner"],
       }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         attempt_id: "90000000-0000-0000-0000-000000000001", method: "phone", status: "code_requested", expires_at: "2026-08-22T10:00:00Z",
       }), { status: 201 }))
@@ -124,6 +153,7 @@ describe("App", () => {
         organization_id: "60000000-0000-0000-0000-000000000001",
         roles: ["company_owner"],
       }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         attempt_id: "90000000-0000-0000-0000-000000000002", method: "qr", status: "pending", expires_at: "2026-08-22T10:00:00Z", qr_url: "tg://login?token=test-only",
       }), { status: 201 }));

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import HTTPException
 
@@ -22,6 +22,7 @@ from app.modules.telegram_connections.models import (
 from app.modules.telegram_connections.routes import (
     build_connection_router,
     build_tdata_ticket_router,
+    build_workspace_account_directory_router,
     build_workspace_connection_router,
 )
 from app.modules.telegram_connections.tdata_ticket import TdataTicketRegistry
@@ -146,6 +147,18 @@ class FakeStatuses:
         )
 
 
+class FakeDirectory:
+    async def list(self, principal) -> tuple[ConnectionStatusView, ...]:
+        return (
+            ConnectionStatusView(
+                account_id=UUID(int=1),
+                state="quarantine",
+                last_seen_at=None,
+                error_code=None,
+            ),
+        )
+
+
 def test_phone_start_route_returns_only_safe_attempt_view() -> None:
     async def principal() -> PlatformOwnerPrincipal:
         return PlatformOwnerPrincipal(principal_id=uuid4())
@@ -158,6 +171,37 @@ def test_phone_start_route_returns_only_safe_attempt_view() -> None:
     assert status == 201
     assert json.loads(body)["status"] == "code_requested"
     assert "+12025550123" not in body.decode()
+
+
+def test_workspace_account_directory_uses_session_tenant_context() -> None:
+    organization_id = uuid4()
+
+    async def principal() -> TenantContext:
+        return TenantContext(
+            organization_id=organization_id,
+            actor_id=uuid4(),
+            roles=frozenset({"manager"}),
+        )
+
+    application = create_app()
+    application.include_router(
+        build_workspace_account_directory_router(
+            FakeDirectory(),
+            principal_dependency=principal,
+        )
+    )
+
+    status, body = asyncio.run(asgi_get(application, "/workspace/telegram/accounts"))
+
+    assert status == 200
+    assert json.loads(body) == [
+        {
+            "account_id": "00000000-0000-0000-0000-000000000001",
+            "state": "quarantine",
+            "last_seen_at": None,
+            "error_code": None,
+        }
+    ]
 
 
 def test_phone_start_route_fails_before_reading_body_without_authenticated_owner() -> None:

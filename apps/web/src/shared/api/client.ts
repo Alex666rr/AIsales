@@ -23,6 +23,13 @@ export type TelegramQrStart = TelegramConnectionAttempt & {
   qr_url: string;
 };
 
+export type TelegramAccountStatus = {
+  account_id: string;
+  state: string;
+  last_seen_at: string | null;
+  error_code: string | null;
+};
+
 export class ApiError extends Error {
   constructor(public readonly status: number) {
     super("The server did not accept the request.");
@@ -134,4 +141,10 @@ export async function getTelegramQrStatus(attemptId: string): Promise<TelegramCo
   const response = await request(`/workspace/telegram/connections/${attemptId}/qr/status`);
   if (!response.ok) throw new ApiError(response.status);
   return response.json() as Promise<TelegramConnectionAttempt>;
+}
+
+export async function listTelegramAccounts(): Promise<TelegramAccountStatus[]> {
+  const response = await request("/workspace/telegram/accounts");
+  if (!response.ok) throw new ApiError(response.status);
+  return response.json() as Promise<TelegramAccountStatus[]>;
 }
